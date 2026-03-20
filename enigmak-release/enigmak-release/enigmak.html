@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ENIGMAK</title>
+<style>
+  /* System fonts - no external requests needed */
+  :root {
+    --bg:#080c08; --panel:#0c110c; --panel2:#0f140f; --border:#192919;
+    --green:#00ff44; --green-dim:#00882a; --green-faint:rgba(0,255,68,0.06); --green-glow:rgba(0,255,68,0.25);
+    --amber:#ffcc00; --amber-dim:#886600; --amber-faint:rgba(255,204,0,0.07);
+    --blue:#44aaff; --blue-dim:#1a5588; --blue-faint:rgba(68,170,255,0.07);
+    --red:#ff5555; --red-dim:#882222; --red-faint:rgba(255,85,85,0.07);
+    --dim:#2a3e2a; --text:#7aaa7a; --white:#c8eec8;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:'Courier New',Courier,monospace;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:36px 20px 80px;transition:background .3s,color .3s;}
+  body.dec-mode{background:#1a1400;color:#c8a800;}
+  body.dec-mode .machine .section{background:#120f00;border-color:#3a2e00;}
+  body.dec-mode .logo{color:var(--amber);text-shadow:0 0 18px rgba(255,204,0,0.4),0 0 50px rgba(255,204,0,0.15);}
+  body.dec-mode .tab.on-dec{background:rgba(255,204,0,0.15);color:var(--amber);}
+  body.dec-mode .sec-label{color:#5a4a00;}
+  body.dec-mode .rounds-computed{color:var(--amber);}
+  body.dec-mode .key-display{border-color:#3a2e00;background:#1a1400;}
+  body.dec-mode input[type=range]::-webkit-slider-thumb{background:var(--amber);}
+  body.dec-mode .rotor-box.assigned{border-color:var(--amber-dim);background:rgba(255,204,0,0.05);}
+  body.dec-mode textarea{border-color:#3a2e00;background:#120f00;color:#c8a800;}
+  body.dec-mode .steck-key{border-color:#3a2e00;color:#8a7000;}
+  body.dec-mode .steck-key.paired{border-color:var(--amber);color:var(--amber);background:rgba(255,204,0,0.08);}
+  body.dec-mode .layout-cb.checked{border-color:var(--amber-dim);background:rgba(255,204,0,0.07);}
+  body.dec-mode .cb-check{color:var(--amber);}
+  body.dec-mode .dec-banner{display:flex;}
+  body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,0.05) 3px,rgba(0,0,0,0.05) 4px);pointer-events:none;z-index:999;}
+  body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at 50% 35%,transparent 55%,rgba(0,0,0,0.6) 100%);pointer-events:none;z-index:998;}
+
+  header{text-align:center;margin-bottom:28px;}
+  .logo{font-family:'Arial Black',Impact,sans-serif;font-size:clamp(2.6rem,7vw,4.8rem);letter-spacing:0.12em;color:var(--green);text-shadow:0 0 18px var(--green-glow),0 0 50px rgba(0,255,68,.1);line-height:1;animation:flicker 10s infinite;}
+  @keyframes flicker{0%,93%,100%{opacity:1}94%{opacity:.82}95%{opacity:1}97%{opacity:.9}}
+  .tagline{font-size:0.58rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--dim);margin-top:5px;}
+
+  .machine{width:100%;max-width:860px;display:flex;flex-direction:column;gap:12px;}
+
+  /* TABS */
+  .tabs{display:flex;border:1px solid var(--border);border-radius:4px;overflow:hidden;align-self:center;}
+  .tab{padding:7px 20px;font-family:'Courier New',Courier,monospace;font-size:0.66rem;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--dim);border-right:1px solid var(--border);transition:all .15s;}
+  .tab:last-child{border-right:none;}
+  .tab.on-enc{background:var(--green-faint);color:var(--green);}
+  .tab.on-dec{background:var(--amber-faint);color:var(--amber);}
+
+  /* SECTION */
+  .section{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px 18px;display:flex;flex-direction:column;gap:10px;}
+  .sec-label{font-size:0.56rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--dim);}
+
+  /* LAYOUT PICKER */
+  .layout-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;}
+  .layout-cb{display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--panel2);transition:all .12s;}
+  .layout-cb:hover{border-color:var(--dim);}
+  .layout-cb.checked{border-color:var(--green-dim);background:var(--green-faint);}
+  .layout-cb input{display:none;}
+  .cb-box{width:14px;height:14px;border:1px solid var(--dim);border-radius:2px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .1s;}
+  .layout-cb.checked .cb-box{border-color:var(--green);background:var(--green-faint);}
+  .cb-check{font-size:0.6rem;color:var(--green);display:none;}
+  .layout-cb.checked .cb-check{display:block;}
+  .cb-name{font-size:0.7rem;color:var(--dim);}
+  .layout-cb.checked .cb-name{color:var(--green);}
+
+  /* ROTOR BUILDER */
+  .rotor-slots{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;}
+  .rotor-slot{display:flex;flex-direction:column;align-items:center;gap:4px;}
+  .rotor-box{width:52px;height:52px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:0.6rem;color:var(--dim);text-align:center;line-height:1.3;cursor:pointer;transition:all .15s;position:relative;}
+  .rotor-box:hover{border-color:var(--dim);}
+  .rotor-box.assigned{border-color:var(--green-dim);background:var(--green-faint);color:var(--green);}
+  .rotor-box .r-num{font-size:0.5rem;color:var(--dim);position:absolute;top:3px;left:5px;}
+  .rotor-box .r-name{font-size:0.55rem;line-height:1.2;}
+  .rotor-box .r-pos{font-size:0.9rem;color:var(--green);font-weight:bold;}
+  .rotor-ctrl{display:flex;gap:4px;}
+  .rbtn{width:18px;height:18px;background:var(--panel2);border:1px solid var(--border);border-radius:2px;color:var(--dim);font-size:0.6rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .1s;}
+  .rbtn:hover{color:var(--green);border-color:var(--green-dim);}
+
+  .add-rotor-btn{width:52px;height:52px;border:1px dashed var(--dim);border-radius:6px;background:transparent;color:var(--dim);font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;}
+  .add-rotor-btn:hover{border-color:var(--green-dim);color:var(--green);}
+  .del-rotor-btn{width:14px;height:14px;background:var(--red-faint);border:1px solid var(--red-dim);border-radius:2px;color:var(--red);font-size:0.5rem;cursor:pointer;display:flex;align-items:center;justify-content:center;position:absolute;top:2px;right:2px;}
+
+  /* rounds */
+  .rounds-row{display:flex;align-items:center;gap:10px;}
+  .rounds-row .sec-label{width:55px;flex-shrink:0;}
+  input[type=range]{-webkit-appearance:none;flex:1;height:2px;background:var(--border);outline:none;border-radius:2px;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--green);cursor:pointer;box-shadow:0 0 6px var(--green-glow);}
+  .rounds-val{font-size:1.1rem;color:var(--green);text-shadow:0 0 8px var(--green-glow);width:24px;text-align:right;}
+
+  /* IO */
+  .io{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  @media(max-width:500px){.io{grid-template-columns:1fr;}}
+  .io-panel{display:flex;flex-direction:column;gap:5px;}
+  .io-label{font-size:0.56rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);}
+  textarea{background:var(--panel);border:1px solid var(--border);border-radius:4px;color:var(--white);font-family:'Courier New',Courier,monospace;font-size:.9rem;line-height:1.6;padding:10px 13px;resize:none;height:110px;outline:none;transition:border-color .15s;}
+  textarea:focus{border-color:var(--green-dim);}
+  #output{color:var(--green);cursor:default;}
+  #output.dec-out{color:var(--amber);}
+
+  /* VIS */
+
+
+
+
+
+
+  @keyframes nIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+
+  .bottom-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;}
+  .key-hint{font-size:.56rem;color:var(--dim);letter-spacing:.06em;}
+  .key-hint span{color:var(--amber);}
+  .copy-btn{padding:7px 15px;font-family:'Courier New',Courier,monospace;font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;border:1px solid var(--green-dim);border-radius:4px;background:transparent;color:var(--green);transition:all .15s;}
+  .copy-btn:hover{background:var(--green-faint);}
+  .copy-btn.dec{border-color:var(--amber-dim);color:var(--amber);}
+
+  .warning{font-size:.6rem;color:var(--amber);letter-spacing:.08em;padding:6px 0;}
+  /* UPGRADED: nonce, rounds display, ioc, strength */
+  .rounds-computed{font-size:1.1rem;color:var(--amber);text-shadow:0 0 8px rgba(255,204,0,.3);font-weight:bold;letter-spacing:.04em;}
+  .rounds-note{font-size:0.5rem;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;}
+  .nonce-val{font-size:1rem;color:var(--amber);font-family:'Courier New',Courier,monospace;letter-spacing:.18em;
+    background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:6px 12px;min-width:72px;text-align:center;}
+  .stat-row{display:flex;gap:16px;flex-wrap:wrap;align-items:center;}
+  .stat-chip{font-size:.58rem;color:var(--dim);letter-spacing:.08em;}
+  .stat-chip span{color:var(--green);}
+  .stat-chip span.amb{color:var(--amber);}
+  .stat-chip span.red{color:var(--red);}
+
+  /* KEY SYSTEM */
+  .key-system{display:flex;flex-direction:column;gap:8px;}
+  .key-row{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;}
+  .key-display{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--border);border-radius:4px;
+    padding:8px 12px;font-size:0.72rem;letter-spacing:0.06em;color:var(--green);
+    font-family:'Courier New',Courier,monospace;word-break:break-all;cursor:pointer;transition:all .15s;
+    display:flex;align-items:center;gap:8px;}
+  .key-display:hover{border-color:var(--green-dim);}
+  .key-display .key-label{font-size:0.5rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);flex-shrink:0;}
+  .key-display .key-val{color:var(--green);word-break:break-all;}
+  .key-btn{padding:7px 13px;font-family:'Courier New',Courier,monospace;font-size:0.62rem;letter-spacing:0.1em;
+    text-transform:uppercase;cursor:pointer;border:1px solid var(--border);border-radius:4px;
+    background:transparent;color:var(--dim);transition:all .15s;white-space:nowrap;flex-shrink:0;}
+  .key-btn:hover{color:var(--green);border-color:var(--green-dim);}
+  .key-btn.active{color:var(--green);border-color:var(--green-dim);background:var(--green-faint);}
+  .key-import-row{display:flex;gap:8px;align-items:center;}
+  .key-import-input{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:4px;
+    color:var(--white);font-family:'Courier New',Courier,monospace;font-size:0.72rem;padding:7px 12px;
+    outline:none;transition:border-color .15s;}
+  .key-import-input:focus{border-color:var(--green-dim);}
+  .key-import-input.error{border-color:var(--red-dim);color:var(--red);}
+  .key-import-input.ok{border-color:var(--green-dim);}
+  .key-status{font-size:0.56rem;letter-spacing:0.1em;color:var(--dim);min-height:14px;}
+  .key-status.ok{color:var(--green-dim);}
+  .key-status.err{color:var(--red);}
+
+  /* STECKERBRETT */
+  .steck-board{display:flex;flex-direction:column;gap:10px;}
+  .steck-alpha{display:flex;flex-wrap:wrap;gap:5px;}
+  .steck-key{width:36px;height:36px;border:1px solid var(--border);border-radius:4px;background:var(--panel2);
+    color:var(--dim);font-size:0.78rem;font-weight:bold;cursor:pointer;display:flex;align-items:center;
+    justify-content:center;transition:all .15s;position:relative;flex-shrink:0;}
+  .steck-key:hover{border-color:var(--dim);color:var(--text);}
+  .steck-key.selected{border-color:var(--amber);background:var(--amber-faint);color:var(--amber);box-shadow:0 0 6px rgba(255,204,0,.2);}
+  .steck-key.paired{border-color:var(--green-dim);background:var(--green-faint);color:var(--green);}
+  .steck-key.paired-other{border-color:var(--blue-dim);background:var(--blue-faint);color:var(--blue);}
+  .steck-key .steck-badge{position:absolute;top:1px;right:2px;font-size:0.38rem;color:var(--green-dim);}
+  .steck-cables{display:flex;flex-wrap:wrap;gap:5px;min-height:22px;}
+  .steck-cable{display:flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid var(--green-dim);
+    border-radius:3px;background:var(--green-faint);font-size:0.68rem;color:var(--green);cursor:pointer;}
+  .steck-cable:hover{border-color:var(--red-dim);background:var(--red-faint);color:var(--red);}
+  .steck-cable .cable-x{font-size:0.55rem;color:var(--dim);}
+  .steck-hint{font-size:0.56rem;color:var(--dim);letter-spacing:0.06em;}
+  .steck-hint span{color:var(--amber);}
+
+
+  /* PROCESS VISUALIZER */
+  .vis-section{background:var(--panel);border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+  .vis-toggle{width:100%;background:none;border:none;color:var(--dim);font-family:'Courier New',Courier,monospace;font-size:0.56rem;letter-spacing:0.2em;text-transform:uppercase;padding:10px 18px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:color .15s;}
+  .vis-toggle:hover{color:var(--text);}
+  .vis-toggle .arrow{transition:transform .2s;font-size:0.5rem;}
+  .vis-toggle.open .arrow{transform:rotate(180deg);}
+  .vis-body{display:none;padding:12px 18px;border-top:1px solid var(--border);}
+  .vis-body.open{display:block;}
+  .vis-char-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;}
+  .vis-pill{font-size:0.65rem;padding:3px 7px;border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--dim);background:var(--panel2);transition:all .1s;font-family:'Courier New',Courier,monospace;}
+  .vis-pill:hover{border-color:var(--dim);color:var(--text);}
+  .vis-pill.active{border-color:var(--green);color:var(--green);background:var(--green-faint);}
+  .vis-pill.done{color:var(--green-dim);border-color:var(--green-dim);}
+  .vis-card{background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:10px 14px;font-size:0.65rem;display:flex;flex-direction:column;gap:7px;}
+  .vis-card-empty{color:var(--dim);font-size:0.6rem;letter-spacing:.1em;}
+  .vis-transform{display:flex;align-items:center;gap:10px;margin-bottom:2px;}
+  .vis-char-big{font-size:1.6rem;font-family:'Courier New',Courier,monospace;min-width:28px;text-align:center;}
+  .vis-char-big.in{color:var(--text);}
+  .vis-char-big.out{color:var(--green);}
+  .vis-arrow{color:var(--dim);font-size:1rem;}
+  .vis-row{display:flex;justify-content:space-between;gap:8px;color:var(--dim);font-size:0.6rem;}
+  .vis-row span{color:var(--text);}
+  .vis-row span.hi{color:var(--amber);}
+  .vis-pipeline{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px;}
+  .vis-pnode{font-size:0.55rem;padding:2px 6px;border:1px solid var(--border);border-radius:2px;color:var(--dim);}
+  .vis-pnode.changed{border-color:var(--green-dim);color:var(--green);}
+  .vis-sep{color:var(--dim);font-size:0.7rem;}
+  body.dec-mode .vis-pill.active{border-color:var(--amber);color:var(--amber);background:var(--amber-faint);}
+  body.dec-mode .vis-char-big.out{color:var(--amber);}
+  body.dec-mode .vis-pnode.changed{border-color:var(--amber-dim);color:var(--amber);}
+
+  /* PASSPHRASE / FINGERPRINT */
+  .phrase-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .phrase-input{flex:1;min-width:180px;background:var(--panel2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'Courier New',Courier,monospace;font-size:0.7rem;padding:6px 10px;outline:none;}
+  .phrase-input:focus{border-color:var(--green-dim);}
+  .phrase-input::placeholder{color:var(--dim);}
+  .phrase-strength{font-size:0.56rem;letter-spacing:.1em;color:var(--dim);}
+  .fingerprint-val{font-size:1rem;color:var(--amber);font-family:'Courier New',Courier,monospace;letter-spacing:.22em;background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:5px 12px;min-width:80px;text-align:center;}
+  .checksum-val{font-size:.75rem;color:var(--blue);font-family:'Courier New',Courier,monospace;letter-spacing:.14em;background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:4px 10px;}
+  .checksum-ok{color:var(--green);}
+  .checksum-fail{color:var(--red);}
+  body.dec-mode .phrase-input{border-color:#3a2e00;background:#120f00;color:#c8a800;}
+  body.dec-mode .phrase-input:focus{border-color:var(--amber-dim);}
+</style>
+</head>
+<script>
+// TOR/strict-mode compatibility polyfills
+if (!Math.imul) {
+  Math.imul = function(a,b) {
+    var aHi=(a>>>16)&0xffff, aLo=a&0xffff, bHi=(b>>>16)&0xffff, bLo=b&0xffff;
+    return ((aLo*bLo)+(((aHi*bLo+aLo*bHi)<<16)>>>0)|0);
+  };
+}
+// Nonce-safe random: works even if Math.random precision is reduced
+function secureRandInt(max) {
+  if (window.crypto && window.crypto.getRandomValues) {
+    const arr = new Uint32Array(1);
+    window.crypto.getRandomValues(arr);
+    return arr[0] % max;
+  }
+  return Math.floor(Math.random() * max);
+}
+</script>
+
+<body>
+<header>
+  <div class="logo">ENIGMAK</div>
+  <div class="tagline">Irregular stepping · diffusion · keyed layouts · 68-symbol alphabet</div>
+</header>
+
+<div class="machine">
+
+  <div class="tabs">
+    <button class="tab on-enc" id="btn-enc" onclick="setMode('enc')">▶ Encrypt</button>
+    <button class="tab" id="btn-dec" onclick="setMode('dec')">◀ Decrypt</button>
+  </div>
+  <div class="dec-banner" style="display:none;background:rgba(255,204,0,0.12);border:1px solid var(--amber-dim);border-radius:4px;padding:6px 16px;font-size:0.6rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--amber);align-items:center;gap:8px;">
+    <span>&#9664;</span> decryption mode - output is plaintext <span>&#9664;</span>
+  </div>
+
+  <!-- LAYOUT PICKER -->
+  <div class="section">
+    <div class="sec-label">Available layouts - rotor-assigned layouts drive rounds; unused layouts power plugboard &amp; scramble</div>
+    <div class="layout-grid" id="layout-grid"></div>
+    <div class="warning" id="layout-warning" style="display:none">⚠ At least one layout must be selected</div>
+  </div>
+
+  <!-- ROTOR BUILDER -->
+  <div class="section">
+    <div class="sec-label">Rotors - assign a layout and starting position to each rotor</div>
+    <div class="rotor-slots" id="rotor-slots"></div>
+    <div class="rounds-row">
+      <div class="sec-label">Base rounds</div>
+      <input type="range" id="rounds-slider" min="1" max="999" value="13" step="1" oninput="onUserRounds()">
+      <div class="rounds-val" id="rounds-slider-val">13</div>
+    </div>
+    <div class="rounds-row" style="margin-top:4px;">
+      <div class="sec-label">Final rounds</div>
+      <div class="rounds-computed" id="rounds-display">-</div>
+      <div class="rounds-note">(base + key material mod 999)</div>
+    </div>
+  </div>
+
+
+  <!-- STECKERBRETT -->
+  <div class="section">
+    <div class="sec-label">Steckerbrett - click a letter then another to cable them together (max 13 pairs)</div>
+    <div class="steck-board">
+      <div class="steck-alpha" id="steck-alpha"></div>
+      <div class="steck-cables" id="steck-cables">
+        <span class="steck-hint">No cables connected - click two letters to pair them</span>
+      </div>
+      <div class="steck-hint" id="steck-count">0 / 34 pairs used</div>
+    </div>
+  </div>
+
+  <!-- NONCE -->
+  <div class="section">
+    <div class="sec-label">Nonce - generates a unique starting state so identical plaintexts never produce identical ciphertext</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <div class="nonce-val" id="nonce-val">-</div>
+      <button class="key-btn" onclick="generateNonce()">Generate</button>
+      <button class="key-btn" onclick="clearNonce()">Clear</button>
+      <span style="font-size:.56rem;color:var(--dim);letter-spacing:.08em;">Share this alongside your ciphertext - recipient enters it to decrypt</span>
+    </div>
+  </div>
+
+  <!-- IO -->
+  <div class="io">
+    <div class="io-panel">
+      <div class="io-label" id="lbl-in">Plaintext</div>
+      <textarea id="input" placeholder="Type your message..." oninput="onInput()"></textarea>
+    </div>
+    <div class="io-panel">
+      <div class="io-label" id="lbl-out">Ciphertext</div>
+      <textarea id="output" readonly></textarea>
+    </div>
+  </div>
+
+
+  <!-- PROCESS VISUALIZER -->
+  <div class="vis-section">
+    <button class="vis-toggle" id="vis-toggle-btn" onclick="toggleVis()">
+      <span>Process visualiser - click a character to inspect its transformation</span>
+      <span class="arrow">▼</span>
+    </button>
+    <div class="vis-body" id="vis-body">
+      <div class="vis-char-row" id="vis-char-row">
+        <span style="font-size:.6rem;color:var(--dim)">Characters appear here when you type</span>
+      </div>
+      <div class="vis-card" id="vis-card">
+        <div class="vis-card-empty">Select a character above to inspect its transformation.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KEY SYSTEM -->
+  <div class="section">
+    <div class="sec-label">Key - export to share settings · import to restore them</div>
+    <div class="key-system">
+      <div class="key-row">
+        <div class="key-display" id="key-display" onclick="copyKey()" title="Click to copy">
+          <span class="key-label">KEY</span>
+          <span class="key-val" id="key-val">-</span>
+        </div>
+        <button class="key-btn" id="copy-key-btn" onclick="copyKey()">Copy Key</button>
+      </div>
+      <div class="key-row" style="margin-top:4px;align-items:flex-start;flex-direction:column;gap:6px;">
+        <div style="font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);">Passphrase - word encoding of this key</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
+          <div class="key-display" id="phrase-display" onclick="copyPhrase()" title="Click to copy" style="flex:1;min-width:0;cursor:pointer;">
+            <span class="key-label">PH</span>
+            <span class="key-val" id="phrase-val" style="font-size:.6rem;letter-spacing:.06em;word-break:break-all;">-</span>
+          </div>
+          <button class="key-btn" onclick="copyPhrase()">Copy</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
+          <input class="phrase-input" id="phrase-import" placeholder="Paste passphrase to import..." oninput="onPhraseImport()" autocomplete="off" spellcheck="false" style="flex:1;">
+          <button class="key-btn" onclick="applyPhraseImport()">Load</button>
+        </div>
+        <div class="key-status" id="phrase-status"></div>
+      </div>
+      <div class="key-row" style="margin-top:6px;align-items:center;gap:10px;">
+        <span style="font-size:.56rem;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;">Fingerprint</span>
+        <div class="fingerprint-val" id="fingerprint-val">--</div>
+        <span style="font-size:.56rem;color:var(--dim);letter-spacing:.08em;">Share verbally to confirm matching keys</span>
+      </div>
+      <div class="key-import-row">
+        <input class="key-import-input" id="key-import" placeholder="Paste key to import..." oninput="onKeyImport()" spellcheck="false" autocomplete="off">
+        <button class="key-btn" onclick="applyImportedKey()">Load</button>
+      </div>
+      <div class="key-status" id="key-status"></div>
+    </div>
+  </div>
+
+  <div class="bottom-row">
+    <div class="stat-row">
+      <div class="stat-chip" id="key-hint"></div>
+      <div class="stat-chip" id="ioc-display"></div>
+      <div class="stat-chip" id="strength-display"></div>
+      <div class="stat-chip" id="checksum-display"></div>
+    </div>
+    <button class="copy-btn" id="copy-btn" onclick="copyOut()">Copy output</button>
+  </div>
+
+</div>
+
+<script>
+// ── Layout definitions (QWERTY physical pos → layout output) ─────────────────
+const QWERTY_TOP  = 'QWERTYUIOP';
+const QWERTY_HOME = 'ASDFGHJKL;';
+const QWERTY_BOT  = 'ZXCVBNM';
+const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./!@#$%^&*()_+{}|:"<>?`~';
+const N = ALPHA.length; // 68
+
+const LAYOUT_DEFS = {
+  'QWERTY':      { top:'QWERTYUIOP', home:'ASDFGHJKL;', bot:'ZXCVBNM' },
+  'Colemak':     { top:'QWFPGJLUY;', home:'ARSTDHNEIO', bot:'ZXCVBKM' },
+  'Colemak-DH':  { top:'QWFPBJLUY;', home:'ARSTGMNEIO', bot:'ZXCDVKH' },
+  'Dvorak':      { top:';VZPYFGCRL', home:'AOEUIDHTNS', bot:'QJKXBMWVZ' },
+  'Workman':     { top:'QDRWBJFUP;', home:'ASHTGYNEOI', bot:'ZXMCVKL' },
+  'Norman':      { top:'QWDFKJURL;', home:'ASETGYNIOH', bot:'ZXCVBPM' },
+  'Asset':       { top:'QWJFGYPUL;', home:'ASETDHNIOR', bot:'ZXCVBKM' },
+  'Halmak':      { top:'WLRBJZFUO;', home:'SHNTMEDAIC', bot:'QGVXPKY' },
+  'AZERTY':      { top:'AZERTYUIOP', home:'QSDFGHJKL;', bot:'WXCVBNM' },
+  'QWERTZ':      { top:'QWERTZUIOP', home:'ASDFGHJKL;', bot:'YXCVBNM' },
+};
+
+// Build map: physical QWERTY key → layout output
+function buildMap(name) {
+  const def = LAYOUT_DEFS[name];
+  const map = {};
+  QWERTY_TOP.split('').forEach((q,i)  => { if(def.top[i])  map[q] = def.top[i].toUpperCase(); });
+  QWERTY_HOME.split('').forEach((q,i) => { if(def.home[i]) map[q] = def.home[i].toUpperCase(); });
+  QWERTY_BOT.split('').forEach((q,i)  => { if(def.bot[i])  map[q] = def.bot[i].toUpperCase(); });
+  return map;
+}
+
+function invertMap(m) { const inv={}; Object.entries(m).forEach(([k,v])=>{inv[v]=k;}); return inv; }
+
+// Precompute all maps + inverses
+const MAPS = {}, INV_MAPS = {};
+Object.keys(LAYOUT_DEFS).forEach(name => {
+  MAPS[name] = buildMap(name);
+  INV_MAPS[name] = invertMap(MAPS[name]);
+});
+
+// ── App state ────────────────────────────────────────────────────────────────
+let mode = 'enc';
+let enabledLayouts = new Set(['Colemak','Colemak-DH','Dvorak','Workman']);
+let rotors = [
+  { layout:'Colemak', pos:0 },
+  { layout:'Colemak-DH', pos:0 },
+  { layout:'Dvorak', pos:0 },
+];
+let nonce = '';
+let userRounds = 13; // user-set base round count (1-999)
+let processedChars = [];
+
+// ── Key material derivation (all four upgrades) ───────────────────────────────
+function computeKeyMaterial() {
+  // Normalize each pair so lower ALPHA index is always x - prevents click-order affecting S
+  const S = steckPairs.reduce((a,[x,y]) => { const ai=ALPHA.indexOf(x),bi=ALPHA.indexOf(y); return a + (ai<bi ? ai*N+bi : bi*N+ai); }, 0);
+  const R = rotors.reduce((a,r) => a + r.pos, 0);
+  const L = [...enabledLayouts].reduce((a,n) => a + LAYOUT_NAMES.indexOf(n), 0);
+  const rounds = ((S + R + L + userRounds) % 999) + 1;
+  const keySum = ((S * 31 + R * 17 + L * 13) >>> 0);
+
+  // Upgrade 1: irregular step mask (19/27 positions advance rotors)
+  const stepPos = [...Array(N).keys()];
+  let v = (keySum ^ 0x5A5A5A5A) >>> 0;
+  for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[stepPos[i],stepPos[j]]=[stepPos[j],stepPos[i]];}
+  const stepMask = new Array(N).fill(false);
+  stepPos.slice(0,47).forEach(p=>stepMask[p]=true); // 47/68 ≈ 70%
+
+  // Upgrade 2: diffusion - keyed 27-position transposition
+  const transPerm = [...Array(N).keys()];
+  v = (keySum ^ 0xDEAD1234) >>> 0;
+  for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[transPerm[i],transPerm[j]]=[transPerm[j],transPerm[i]];}
+  const invTransPerm = new Array(N);
+  transPerm.forEach((x,i) => invTransPerm[x]=i);
+
+  // Upgrade 3: keyed layout base offset
+  const layoutKeyBase = keySum % N;
+
+  return {rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase};
+}
+
+function keyedLayoutOffset(layoutName, layoutKeyBase) {
+  return (LAYOUT_NAMES.indexOf(layoutName)*7 + layoutKeyBase) % N;
+}
+
+// ── Cipher core ───────────────────────────────────────────────────────────────
+function advanceRotors(rs, charIdx, stepMask) {
+  if (!stepMask[charIdx % N]) return rs.map(r=>({...r}));
+  const nrs = rs.map(r=>({...r}));
+  nrs[nrs.length-1].pos = (nrs[nrs.length-1].pos+1)%N;
+  for (let i=nrs.length-1; i>0; i--) {
+    if (nrs[i].pos === 0) nrs[i-1].pos = (nrs[i-1].pos+1)%N;
+  }
+  return nrs;
+}
+
+function rotorShift(rs) {
+  // Use BigInt to avoid float overflow with large N and many rotors
+  let val = 0n;
+  const Nb = BigInt(N);
+  rs.forEach((r,i) => { val += BigInt(r.pos) * (Nb ** BigInt(rs.length-1-i)); });
+  return Number(val % Nb);
+}
+
+function applyNonce(baseRotors, nonceStr) {
+  if (!nonceStr) return baseRotors;
+  return baseRotors.map((r,i) => {
+    const off = i < nonceStr.length ? ALPHA.indexOf(nonceStr[i].toUpperCase()) : 0;
+    return {...r, pos: (r.pos + (off<0?0:off)) % N};
+  });
+}
+
+function applyLayout(char, layoutName, shift, invert) {
+  if (!invert) {
+    let c = MAPS[layoutName][char] ?? char;
+    if (ALPHA.includes(c)) c = ALPHA[(ALPHA.indexOf(c) + shift) % N];
+    return c;
+  } else {
+    let c = char;
+    if (ALPHA.includes(c)) c = ALPHA[(ALPHA.indexOf(c) - shift + N*100) % N];
+    c = INV_MAPS[layoutName][c] ?? c;
+    return c;
+  }
+}
+
+
+// ── Steckerbrett state ───────────────────────────────────────────────────────
+let steckPairs = []; // array of [a, b]
+let steckPending = null; // letter waiting for a partner
+
+function steckMap() {
+  const m = {};
+  for (const c of ALPHA) m[c] = c;
+  for (const [a,b] of steckPairs) { m[a]=b; m[b]=a; }
+  return m;
+}
+
+function applySteck(char, map) { return map[char] ?? char; }
+
+function buildSteckBoard() {
+  const alpha = document.getElementById('steck-alpha');
+  alpha.innerHTML = '';
+  const map = steckMap();
+  const pairedSet = new Set(steckPairs.flat());
+  ALPHA.split('').forEach(c => {
+    const btn = document.createElement('button');
+    const isPaired = pairedSet.has(c);
+    const isSelected = steckPending === c;
+    const pair = steckPairs.find(p => p[0]===c || p[1]===c);
+    const partner = pair ? (pair[0]===c ? pair[1] : pair[0]) : null;
+    btn.className = 'steck-key' + (isSelected?' selected':isPaired?' paired':'');
+    btn.textContent = c;
+    if (partner) btn.innerHTML = c + `<span class="steck-badge">${partner}</span>`;
+    btn.onclick = () => onSteckClick(c);
+    alpha.appendChild(btn);
+  });
+
+  const cablesEl = document.getElementById('steck-cables');
+  if (steckPairs.length === 0) {
+    cablesEl.innerHTML = '<span class="steck-hint">No cables connected - click two characters to pair them</span>';
+  } else {
+    cablesEl.innerHTML = '';
+    steckPairs.forEach(([a,b]) => {
+      const cable = document.createElement('div');
+      cable.className = 'steck-cable';
+      cable.title = 'Click to remove';
+      cable.innerHTML = `${a} <span class="cable-x">⇄</span> ${b} <span class="cable-x">✕</span>`;
+      cable.onclick = () => { steckPairs = steckPairs.filter(p=>!(p[0]===a&&p[1]===b)); steckPending=null; buildSteckBoard(); recompute(); };
+      cablesEl.appendChild(cable);
+    });
+  }
+
+  const countEl = document.getElementById('steck-count');
+  countEl.textContent = `${steckPairs.length} / 34 pairs used${steckPending ? ` · Waiting for partner of ${steckPending} - click another character` : ''}`;
+}
+
+function onSteckClick(c) {
+  const pairedSet = new Set(steckPairs.flat());
+  if (steckPending === null) {
+    if (pairedSet.has(c)) {
+      // click on already-paired letter: remove its pair
+      steckPairs = steckPairs.filter(p => p[0]!==c && p[1]!==c);
+      buildSteckBoard(); recompute(); return;
+    }
+    if (steckPairs.length >= 34) return;
+    steckPending = c;
+  } else {
+    if (c === steckPending) { steckPending = null; buildSteckBoard(); return; } // deselect
+    if (pairedSet.has(c)) { steckPending = null; buildSteckBoard(); return; }  // already taken
+    steckPairs.push([steckPending, c]);
+    steckPending = null;
+  }
+  buildSteckBoard(); recompute();
+}
+
+// Plugboard: pure layout substitution, no shift
+function plugFwd(char, layouts) { let c=char; for(const n of layouts) c=MAPS[n][c]??c; return c; }
+function plugInv(char, layouts) { let c=char; for(let i=layouts.length-1;i>=0;i--) c=INV_MAPS[layouts[i]][c]??c; return c; }
+
+function processAll(str, startRotors, _unused_rds, dec) {
+  const km = computeKeyMaterial();
+  const rds = km.rounds;
+  const rotorLayoutSet = new Set(startRotors.map(r=>r.layout));
+  const enabledList = [...enabledLayouts];
+  const unusedLayouts = enabledList.filter(n => !rotorLayoutSet.has(n));
+
+  let rs = startRotors.map(r=>({...r}));
+  const chars = [];
+  let result = '';
+  let charIndex = 0;
+
+  for (const c of str) {
+    // 68-char alphabet: fold lowercase a-z to uppercase before processing
+    // (lowercase letters are not in the alphabet; this allows natural typing)
+    const upper = (c >= 'a' && c <= 'z') ? c.toUpperCase() : c;
+    const isAlpha = ALPHA.includes(upper);
+    const isLower = false;
+    if (!isAlpha) { chars.push({char:c,passthrough:true,out:c,rs:[...rs]}); result+=c; continue; }
+
+    const startShift = rotorShift(rs);
+    const stepLayouts = [], stepShifts = [];
+    for (let r=0; r<rds; r++) {
+      const lay = enabledList[r % enabledList.length];
+      stepLayouts.push(lay);
+      stepShifts.push((startShift + r + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
+    }
+    const scrambleShifts = unusedLayouts.map((_,i) =>
+      (startShift + rds + i + keyedLayoutOffset(unusedLayouts[i], km.layoutKeyBase)) % N);
+    const steps = [upper];
+
+    const sm = steckMap();
+    if (!dec) {
+      steps.push(applySteck(steps[steps.length-1], sm));
+      steps.push(plugFwd(steps[steps.length-1], unusedLayouts));
+      for (let r=0; r<rds; r++) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], false));
+      // Upgrade 2: diffusion transposition
+      let xd = steps[steps.length-1];
+      if (ALPHA.includes(xd)) xd = ALPHA[km.transPerm[ALPHA.indexOf(xd)]];
+      steps.push(xd);
+      unusedLayouts.forEach((n,i) => steps.push(applyLayout(steps[steps.length-1], n, scrambleShifts[i], false)));
+      steps.push(plugFwd(steps[steps.length-1], unusedLayouts));
+      steps.push(applySteck(steps[steps.length-1], sm));
+    } else {
+      steps.push(applySteck(steps[steps.length-1], sm));
+      steps.push(plugInv(steps[steps.length-1], unusedLayouts));
+      for (let i=unusedLayouts.length-1; i>=0; i--) steps.push(applyLayout(steps[steps.length-1], unusedLayouts[i], scrambleShifts[i], true));
+      // Inverse diffusion
+      let xd = steps[steps.length-1];
+      if (ALPHA.includes(xd)) xd = ALPHA[km.invTransPerm[ALPHA.indexOf(xd)]];
+      steps.push(xd);
+      for (let r=rds-1; r>=0; r--) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], true));
+      steps.push(plugInv(steps[steps.length-1], unusedLayouts));
+      steps.push(applySteck(steps[steps.length-1], sm));
+    }
+
+    const finalUpper = steps[steps.length-1];
+    const out = finalUpper; // exact character, no case transform
+    chars.push({char:c,upper,passthrough:false,steps,stepLayouts,stepShifts,unusedLayouts,scrambleShifts,out,rs:rs.map(r=>({...r})),startShift,rounds:rds});
+    result += out;
+    rs = advanceRotors(rs, charIndex, km.stepMask);
+    charIndex++;
+  }
+  return { chars, result, rounds: rds };
+}
+
+// ── UI Builders ──────────────────────────────────────────────────────────────
+function buildLayoutGrid() {
+  const grid = document.getElementById('layout-grid');
+  grid.innerHTML = '';
+  Object.keys(LAYOUT_DEFS).forEach(name => {
+    const div = document.createElement('div');
+    div.className = 'layout-cb' + (enabledLayouts.has(name)?' checked':'');
+    div.id = 'lcb-'+name.replace(/[^a-zA-Z]/g,'-');
+    div.innerHTML = `<input type="checkbox" ${enabledLayouts.has(name)?'checked':''}><div class="cb-box"><span class="cb-check">✓</span></div><span class="cb-name">${name}</span>`;
+    div.onclick = () => toggleLayout(name);
+    grid.appendChild(div);
+  });
+}
+
+function toggleLayout(name) {
+  if (enabledLayouts.has(name)) {
+    if (enabledLayouts.size <= 1) { document.getElementById('layout-warning').style.display='block'; return; }
+    enabledLayouts.delete(name);
+    // Remove any rotors using this layout
+    rotors = rotors.filter(r => r.layout !== name);
+    if (rotors.length === 0) rotors.push({layout:[...enabledLayouts][0], pos:0});
+  } else {
+    enabledLayouts.add(name);
+    document.getElementById('layout-warning').style.display='none';
+  }
+  const id = 'lcb-'+name.replace(/[^a-zA-Z]/g,'-');
+  const el = document.getElementById(id);
+  if (el) { el.className = 'layout-cb' + (enabledLayouts.has(name)?' checked':''); }
+  buildRotorSlots();
+  recompute();
+}
+
+function buildRotorSlots() {
+  const slots = document.getElementById('rotor-slots');
+  slots.innerHTML = '';
+  rotors.forEach((r, ri) => {
+    const wrap = document.createElement('div'); wrap.className='rotor-slot';
+    const box = document.createElement('div'); box.className='rotor-box assigned'; box.id='rbox-'+ri;
+    box.innerHTML = `<span class="r-num">R${ri+1}</span><span class="r-name">${r.layout}</span><span class="r-pos">${ALPHA[r.pos]}</span><button class="del-rotor-btn" onclick="removeRotor(event,${ri})">×</button>`;
+    box.onclick = (e) => { if(!e.target.classList.contains('del-rotor-btn')) cycleRotorLayout(ri); };
+
+    const ctrl = document.createElement('div'); ctrl.className='rotor-ctrl';
+    const up = document.createElement('button'); up.className='rbtn'; up.textContent='◀';
+    up.onclick = () => { rotors[ri].pos=(rotors[ri].pos-1+N)%N; buildRotorSlots(); recompute(); };
+    const dn = document.createElement('button'); dn.className='rbtn'; dn.textContent='▶';
+    dn.onclick = () => { rotors[ri].pos=(rotors[ri].pos+1)%N; buildRotorSlots(); recompute(); };
+    ctrl.appendChild(up); ctrl.appendChild(dn);
+
+    wrap.appendChild(box); wrap.appendChild(ctrl);
+    slots.appendChild(wrap);
+  });
+
+  // Add button
+  if (rotors.length < 13) {
+    const addBtn = document.createElement('button'); addBtn.className='add-rotor-btn'; addBtn.textContent='+'; addBtn.title='Add rotor';
+    addBtn.onclick = addRotor;
+    const wrap = document.createElement('div'); wrap.className='rotor-slot'; wrap.style.justifyContent='center';
+    wrap.appendChild(addBtn); slots.appendChild(wrap);
+  }
+
+  updateKeyHint();
+  buildCharRow();
+  // Keep active selection valid after recompute
+  if (visActiveIdx >= 0) renderVisCard(visActiveIdx);
+}
+
+function cycleRotorLayout(ri) {
+  const avail = [...enabledLayouts];
+  const cur = avail.indexOf(rotors[ri].layout);
+  rotors[ri].layout = avail[(cur+1) % avail.length];
+  buildRotorSlots(); recompute();
+}
+
+function removeRotor(e, ri) {
+  e.stopPropagation();
+  if (rotors.length <= 1) return;
+  rotors.splice(ri, 1);
+  buildRotorSlots(); recompute();
+}
+
+function addRotor() {
+  const avail = [...enabledLayouts];
+  rotors.push({layout: avail[rotors.length % avail.length], pos:0});
+  buildRotorSlots(); recompute();
+}
+
+// ── Process & output ─────────────────────────────────────────────────────────
+function recompute() {
+  let input = document.getElementById('input').value;
+  if (rotors.length === 0) return;
+  // Compute keyStr once - used consistently for checksum operations
+  const keyStr = encodeKey();
+  // In decrypt mode, extract checksum from key-derived position before processing
+  let incomingChecksum = '';
+  if (mode === 'dec' && input.length > CHECKSUM_LEN) {
+    const insertPos = computeChecksumPos(keyStr, input.length);
+    incomingChecksum = input.slice(insertPos, insertPos + CHECKSUM_LEN);
+    input = input.slice(0, insertPos) + input.slice(insertPos + CHECKSUM_LEN);
+  }
+  const effectiveRotors = applyNonce(rotors, nonce);
+  const { chars, result, rounds } = processAll(input, effectiveRotors, 0, mode==='dec');
+  processedChars = chars;
+  visActiveIdx = Math.min(visActiveIdx, chars.filter(c=>!c.passthrough).length - 1);
+  let displayResult = result;
+  if (mode === 'enc' && result.length > 0) {
+    const chk = computeChecksum(input, keyStr);
+    const insertPos = computeChecksumPos(keyStr, result.length + CHECKSUM_LEN);
+    displayResult = result.slice(0, insertPos) + chk + result.slice(insertPos);
+  }
+  document.getElementById('output').value = displayResult;
+  document.getElementById('output').className = mode==='dec'?'dec-out':'';
+  // Checksum verification in decrypt mode
+  const chkVerEl = document.getElementById('checksum-display');
+  if (chkVerEl && mode === 'dec' && incomingChecksum && result.length > 0) {
+    const expectedChk = computeChecksum(result, keyStr);
+    const match = incomingChecksum === expectedChk;
+    chkVerEl.innerHTML = match
+      ? `<span class="checksum-ok">✓ Checksum verified - decryption correct</span>`
+      : `<span class="checksum-fail">✗ Checksum mismatch - wrong key or corrupted message</span>`;
+  } else if (chkVerEl && mode === 'enc') {
+    chkVerEl.innerHTML = '';
+  }
+  // Update rounds display
+  const rd = document.getElementById('rounds-display');
+  if (rd) rd.textContent = rounds;
+  updateKeyHint();
+  buildCharRow();
+  if (visActiveIdx >= 0) renderVisCard(visActiveIdx);
+}
+
+function onInput() { recompute(); }
+function onUserRounds() {
+  userRounds = parseInt(document.getElementById('rounds-slider').value);
+  document.getElementById('rounds-slider-val').textContent = userRounds;
+  recompute();
+}
+
+// Nonce functions
+function generateNonce() {
+  nonce = Array.from({length:3}, () => ALPHA[secureRandInt(N)]).join('');
+  document.getElementById('nonce-val').textContent = nonce;
+  recompute();
+}
+function clearNonce() {
+  nonce = '';
+  document.getElementById('nonce-val').textContent = '-';
+  recompute();
+}
+
+// Live IoC
+function calcIoC(text) {
+  const t = text.toUpperCase();
+  const freq = {};
+  for (const c of ALPHA) freq[c] = 0;
+  for (const c of t) if (freq[c] !== undefined) freq[c]++;
+  const L = Object.values(freq).reduce((a,b)=>a+b,0);
+  if (L < 2) return null;
+  let sum = 0;
+  for (const n of Object.values(freq)) sum += n*(n-1);
+  return sum/(L*(L-1));
+}
+
+// Key strength in bits
+function calcKeyStrengthBits() {
+  const k = steckPairs.length;
+  // Steck: C(68,2k) * (2k-1)!! / k! for k pairs from 68 chars
+  let steckBits = 0;
+  for (let i=68-2*k+1; i<=68; i++) steckBits += Math.log2(i);
+  steckBits -= k; // divide by 2^k (pair order doesn't matter)
+  for (let i=2; i<=k; i++) steckBits -= Math.log2(i);
+  // Rotors: each from 10 layouts * 68 positions = 680 options
+  const rotorBits = rotors.length * Math.log2(680);
+  let layoutBits = 0;
+  const en = [...enabledLayouts].length;
+  for (let i=0; i<en; i++) layoutBits += Math.log2(10-i);
+  const roundsBits = Math.log2(999);
+  return Math.round(steckBits + rotorBits + layoutBits + roundsBits);
+}
+
+// ── Key encoding/decoding ────────────────────────────────────────────────────
+const LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman','Norman','Asset','Halmak','AZERTY','QWERTZ'];
+
+function encodeKey() {
+  // Space-separated numeric format: [enabled] [rotors] [steck] [U] [nonce?]
+  // enabled: layout digit indices concatenated
+  // rotors: each = 1-digit layout + 2-digit pos (zero-padded)
+  // steck: pairs as 4-char (2+2 digit indices), "0" if none
+  // U: 3-digit base rounds
+  // nonce: 2-digit char indices concatenated (section omitted if no nonce)
+  const enabledStr = [...enabledLayouts].map(n => LAYOUT_NAMES.indexOf(n)).join('');
+  const rotorStr = rotors.map(r =>
+    LAYOUT_NAMES.indexOf(r.layout).toString() + String(r.pos).padStart(2,'0')
+  ).join('');
+  let steckStr;
+  if (steckPairs.length === 0) {
+    steckStr = '0';
+  } else {
+    steckStr = steckPairs.map(([a,b]) => {
+      const ai = ALPHA.indexOf(a), bi = ALPHA.indexOf(b);
+      const lo = Math.min(ai,bi), hi = Math.max(ai,bi);
+      return String(lo).padStart(2,'0') + String(hi).padStart(2,'0');
+    }).sort().join('');
+  }
+  const uStr = String(userRounds).padStart(3,'0');
+  let key = [enabledStr, rotorStr, steckStr, uStr].join(' ');
+  if (nonce) {
+    const nonceStr = [...nonce.toUpperCase()].map(c => {
+      const i = ALPHA.indexOf(c);
+      return i >= 0 ? String(i).padStart(2,'0') : '';
+    }).filter(s=>s).join('');
+    if (nonceStr) key += ' ' + nonceStr;
+  }
+  return key;
+}
+
+function decodeKey(key) {
+  // Detect legacy format (contains dot separator)
+  if (key.includes('.')) {
+    throw new Error('Legacy key format detected - keys must be regenerated for the 68-character alphabet');
+  }
+  const parts = key.trim().split(/\s+/);
+  if (parts.length < 4 || parts.length > 5) throw new Error('Expected 4 or 5 space-separated sections');
+  const [enabledStr, rotorStr, steckStr, uStr, nonceStr] = parts;
+
+  // Decode enabled layouts
+  if (!/^[0-9]+$/.test(enabledStr)) throw new Error('Section 1: layout indices must be digits');
+  const newEnabled = [];
+  for (const ch of enabledStr) {
+    const idx = parseInt(ch);
+    if (idx >= LAYOUT_NAMES.length) throw new Error('Section 1: layout index ' + ch + ' out of range');
+    const name = LAYOUT_NAMES[idx];
+    if (newEnabled.includes(name)) throw new Error('Section 1: duplicate layout ' + name);
+    newEnabled.push(name);
+  }
+  if (newEnabled.length === 0) throw new Error('Section 1: at least one layout required');
+
+  // Decode rotors (3 chars each: 1 layout digit + 2 pos digits)
+  if (!rotorStr || rotorStr.length % 3 !== 0) throw new Error('Section 2: rotor spec must be triples [digit][2-digit-pos]');
+  const newRotors = [];
+  for (let i=0; i<rotorStr.length; i+=3) {
+    const lidx = parseInt(rotorStr[i]);
+    const pos = parseInt(rotorStr.slice(i+1,i+3));
+    if (isNaN(lidx) || lidx >= LAYOUT_NAMES.length) throw new Error('Section 2: invalid layout index at ' + i);
+    if (isNaN(pos) || pos < 0 || pos >= N) throw new Error('Section 2: invalid position ' + pos);
+    const layout = LAYOUT_NAMES[lidx];
+    if (!newEnabled.includes(layout)) throw new Error('Section 2: rotor layout ' + layout + ' not in enabled set');
+    newRotors.push({layout, pos});
+  }
+  if (newRotors.length > 13) throw new Error('Section 2: max 13 rotors');
+
+  // Decode steck (4 chars per pair: 2-digit + 2-digit indices)
+  const newSteck = [];
+  if (steckStr !== '0') {
+    if (steckStr.length % 4 !== 0) throw new Error('Section 3: steck pairs must be groups of 4 digits');
+    const usedIdx = new Set();
+    for (let i=0; i<steckStr.length; i+=4) {
+      const ai = parseInt(steckStr.slice(i,i+2));
+      const bi = parseInt(steckStr.slice(i+2,i+4));
+      if (isNaN(ai)||ai<0||ai>=N) throw new Error('Section 3: invalid index ' + ai);
+      if (isNaN(bi)||bi<0||bi>=N) throw new Error('Section 3: invalid index ' + bi);
+      if (ai === bi) throw new Error('Section 3: char cannot pair with itself');
+      if (usedIdx.has(ai)||usedIdx.has(bi)) throw new Error('Section 3: char used in multiple pairs');
+      usedIdx.add(ai); usedIdx.add(bi);
+      newSteck.push([ALPHA[ai], ALPHA[bi]]);
+    }
+    if (newSteck.length > 34) throw new Error('Section 3: max 34 steck pairs');
+  }
+
+  // Decode U
+  const newU = parseInt(uStr);
+  if (isNaN(newU) || newU < 1 || newU > 999) throw new Error('Section 4: base rounds must be 001-999');
+
+  // Decode nonce (optional, 2-digit indices concatenated)
+  let newNonce = '';
+  if (nonceStr) {
+    if (nonceStr.length % 2 !== 0) throw new Error('Section 5: nonce must be pairs of 2-digit indices');
+    for (let i=0; i<nonceStr.length; i+=2) {
+      const ni = parseInt(nonceStr.slice(i,i+2));
+      if (isNaN(ni)||ni<0||ni>=N) throw new Error('Section 5: invalid nonce index ' + ni);
+      newNonce += ALPHA[ni];
+    }
+  }
+
+  return {newEnabled, newRotors, newRounds:0, newSteck, newNonce, newU};
+}
+
+let importedKeyData = null;
+
+function onKeyImport() {
+  const val = document.getElementById('key-import').value.trim();
+  const input = document.getElementById('key-import');
+  const status = document.getElementById('key-status');
+  if (!val) { input.className='key-import-input'; status.textContent=''; status.className='key-status'; importedKeyData=null; return; }
+  try {
+    importedKeyData = decodeKey(val);
+    const d = importedKeyData;
+    input.className='key-import-input ok';
+    const nonceNote2 = d.newNonce ? ' · nonce ' + d.newNonce : ''; status.textContent = '✓ Valid - ' + d.newEnabled.length + ' layouts · ' + d.newRotors.length + ' rotor(s) · ' + d.newSteck.length + ' steck pair(s) · base rounds ' + (d.newU||13) + ' · 68-char alphabet' + nonceNote2;
+    status.className='key-status ok';
+  } catch(e) {
+    importedKeyData = null;
+    input.className='key-import-input error';
+    status.textContent = '✗ ' + e.message;
+    status.className='key-status err';
+  }
+}
+
+function applyImportedKey() {
+  if (!importedKeyData) { onKeyImport(); return; }
+  const {newEnabled, newRotors, newRounds, newSteck, newNonce, newU} = importedKeyData;
+
+  enabledLayouts = new Set(newEnabled);
+  rotors = newRotors;
+  steckPairs = newSteck;
+  steckPending = null;
+
+  // Restore userRounds
+  userRounds = newU || 13;
+  const sliderEl = document.getElementById('rounds-slider');
+  if (sliderEl) { sliderEl.value = userRounds; document.getElementById('rounds-slider-val').textContent = userRounds; }
+
+  // Restore nonce if present in key
+  nonce = newNonce || '';
+  document.getElementById('nonce-val').textContent = nonce || '-';
+
+  document.getElementById('key-import').value = '';
+  document.getElementById('key-import').className = 'key-import-input';
+  const nonceNote = nonce ? ' · nonce ' + nonce : '';
+  document.getElementById('key-status').textContent = '✓ Key loaded successfully' + nonceNote;
+  document.getElementById('key-status').className = 'key-status ok';
+  importedKeyData = null;
+
+  buildLayoutGrid();
+  buildRotorSlots();
+  buildSteckBoard();
+  recompute();
+}
+
+function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(()=>legacyCopy(text));
+    } else { legacyCopy(text); }
+  } catch(e) { legacyCopy(text); }
+}
+function legacyCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.cssText='position:fixed;top:-9999px;left:-9999px;opacity:0;';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand('copy'); } catch(e) {}
+  document.body.removeChild(ta);
+}
+function copyKey() {
+  const val = document.getElementById('key-val').textContent;
+  if (!val || val === '-') return;
+  copyToClipboard(val);
+  const btn = document.getElementById('copy-key-btn');
+  const orig = btn.textContent;
+  btn.textContent = 'Copied!'; btn.className='key-btn active';
+  setTimeout(()=>{ btn.textContent=orig; btn.className='key-btn'; }, 1500);
+}
+
+function updateKeyHint() {
+  const key = encodeKey();
+  document.getElementById('key-val').textContent = key;
+  const km = computeKeyMaterial();
+  const rotorSummary = rotors.map(r=>r.layout[0]+ALPHA[r.pos]).join('-');
+  const nonceLabel = nonce ? nonce : '-';
+  document.getElementById('key-hint').innerHTML =
+    `<span style="color:var(--dim)">Rotors:</span> <span class="amb">${rotorSummary}</span> &nbsp;·&nbsp; `+
+    `<span style="color:var(--dim)">Base:</span> <span class="amb">${userRounds}</span> &nbsp;`+
+    `<span style="color:var(--dim)">→ Final:</span> <span class="amb">${km.rounds}</span> &nbsp;·&nbsp; `+
+    `<span style="color:var(--dim)">Steck:</span> <span class="amb">${steckPairs.length} pairs</span> &nbsp;·&nbsp; `+
+    `<span style="color:var(--dim)">Nonce:</span> <span class="amb">${nonceLabel}</span>`;
+
+  // Live IoC
+  const outVal = document.getElementById('output').value;
+  const iocEl = document.getElementById('ioc-display');
+  if (iocEl) {
+    const ioc = calcIoC(outVal);
+    if (ioc !== null) {
+      const iocColor = ioc < 0.020 ? 'color:var(--green)' : ioc < 0.030 ? 'color:var(--amber)' : 'color:var(--red)';
+      iocEl.innerHTML = `<span style="color:var(--dim)">IoC:</span> <span style="${iocColor}">${ioc.toFixed(6)}</span> <span style="color:var(--dim)">(floor 0.014706)</span>`;
+    } else {
+      iocEl.innerHTML = '';
+    }
+  }
+
+  // Key strength
+  const strEl = document.getElementById('strength-display');
+  if (strEl) {
+    const bits = calcKeyStrengthBits();
+    const bColor = bits > 100 ? 'color:var(--green)' : bits > 60 ? 'color:var(--amber)' : 'color:var(--red)';
+    strEl.innerHTML = `<span style="color:var(--dim)">Key strength:</span> <span style="${bColor}">${bits} bits</span>`;
+  }
+
+  // Passphrase display
+  updatePhraseDisplay();
+
+  // Fingerprint
+  const fpEl = document.getElementById('fingerprint-val');
+  if (fpEl) fpEl.textContent = computeFingerprint();
+
+  // Checksum verification (decrypt mode)
+  const chkEl = document.getElementById('checksum-display');
+  if (chkEl) {
+    const outVal = document.getElementById('output').value;
+    const inVal = document.getElementById('input').value;
+    if (mode === 'dec' && outVal.length >= CHECKSUM_LEN) {
+      // In dec mode: input is ciphertext with appended checksum
+      // We can't verify here easily without re-encrypting - show status from enc side instead
+      chkEl.innerHTML = '';
+    } else if (mode === 'enc' && outVal.length > CHECKSUM_LEN) {
+      const chkPos = computeChecksumPos(encodeKey(), outVal.length);
+      const chkDisplay = outVal.slice(chkPos, chkPos + CHECKSUM_LEN);
+      chkEl.innerHTML = `<span style="color:var(--dim)">Checksum:</span> <span style="color:var(--blue)">${chkDisplay}</span> <span style="color:var(--dim)">(position ${chkPos}, key-derived)</span>`;
+    } else {
+      chkEl.innerHTML = '';
+    }
+  }
+}
+
+// ── Visualiser ───────────────────────────────────────────────────────────────
+function setMode(m) {
+  mode=m;
+  document.getElementById('btn-enc').className='tab'+(m==='enc'?' on-enc':'');
+  document.getElementById('btn-dec').className='tab'+(m==='dec'?' on-dec':'');
+  document.getElementById('lbl-in').textContent=m==='enc'?'Plaintext':'Ciphertext';
+  document.getElementById('lbl-out').textContent=m==='dec'?'Plaintext':'Ciphertext';
+  document.getElementById('copy-btn').className='copy-btn'+(m==='dec'?' dec':'');
+  // Full-screen amber tint for decrypt mode
+  document.body.className = m==='dec' ? 'dec-mode' : '';
+  const banner = document.querySelector('.dec-banner');
+  if (banner) banner.style.display = m==='dec' ? 'flex' : 'none';
+  recompute();
+}
+
+function copyOut() {
+  const val=document.getElementById('output').value; if(!val) return;
+  copyToClipboard(val);
+  const btn=document.getElementById('copy-btn'), orig=btn.textContent;
+  btn.textContent='Copied!'; setTimeout(()=>{btn.textContent=orig;},1400);
+}
+
+
+// ── Process Visualiser ────────────────────────────────────────────────────────
+let visOpen = false;
+let visActiveIdx = -1;
+
+function toggleVis() {
+  visOpen = !visOpen;
+  const btn = document.getElementById('vis-toggle-btn');
+  const body = document.getElementById('vis-body');
+  btn.className = 'vis-toggle' + (visOpen ? ' open' : '');
+  body.className = 'vis-body' + (visOpen ? ' open' : '');
+}
+
+function buildCharRow() {
+  const row = document.getElementById('vis-char-row');
+  if (!row) return;
+  const alphaChars = processedChars.filter(c => !c.passthrough);
+  if (alphaChars.length === 0) {
+    row.innerHTML = '<span style="font-size:.6rem;color:var(--dim)">Characters appear here when you type</span>';
+    renderVisCard(-1); return;
+  }
+  row.innerHTML = '';
+  processedChars.forEach((c, i) => {
+    if (c.passthrough) return;
+    const pill = document.createElement('button');
+    pill.className = 'vis-pill' + (i === visActiveIdx ? ' active' : i < visActiveIdx ? ' done' : '');
+    pill.textContent = c.char.toUpperCase();
+    pill.onclick = () => { visActiveIdx = i; buildCharRow(); renderVisCard(i); };
+    row.appendChild(pill);
+  });
+}
+
+function renderVisCard(idx) {
+  const card = document.getElementById('vis-card');
+  if (!card) return;
+  if (idx < 0 || !processedChars[idx] || processedChars[idx].passthrough) {
+    card.innerHTML = '<div class="vis-card-empty">Select a character above to inspect its transformation.</div>';
+    return;
+  }
+  const c = processedChars[idx];
+  const dec = mode === 'dec';
+  const inChar = c.upper;
+  const outChar = c.out.toUpperCase();
+
+  // Build compact pipeline - just show key stages, not every round
+  const steps = c.steps;
+  const stageNames = [];
+  if (!dec) {
+    stageNames.push('steck-in');
+    if (c.unusedLayouts.length) stageNames.push('plug-in');
+    stageNames.push(c.rounds + ' rounds');
+    stageNames.push('diffusion');
+    if (c.unusedLayouts.length) stageNames.push('scramble');
+    if (c.unusedLayouts.length) stageNames.push('plug-out');
+    stageNames.push('steck-out');
+  } else {
+    stageNames.push('steck-in');
+    if (c.unusedLayouts.length) stageNames.push('plug-inv');
+    if (c.unusedLayouts.length) stageNames.push('scramble-inv');
+    stageNames.push('diffusion-inv');
+    stageNames.push(c.rounds + ' rounds-inv');
+    if (c.unusedLayouts.length) stageNames.push('plug-out-inv');
+    stageNames.push('steck-out');
+  }
+
+  // Stage values (pick key transitions from steps array)
+  const stageVals = [];
+  stageVals.push(steps[0] || '?'); // input
+  for (let i = 1; i < steps.length; i++) stageVals.push(steps[i]);
+
+  // Render pipeline nodes showing only where the character changed
+  let pipelineHtml = '';
+  let prev = inChar;
+  stageNames.forEach((name, i) => {
+    const val = stageVals[i+1] || '?';
+    const changed = val !== prev;
+    pipelineHtml += `<span class="vis-pnode${changed?' changed':''}">${name}: <b>${val}</b></span>`;
+    if (i < stageNames.length-1) pipelineHtml += '<span class="vis-sep">›</span>';
+    prev = val;
+  });
+
+  // Rotor state
+  const rotorState = c.rs.map((r,i) => `R${i+1}:${ALPHA[r.pos]}`).join(' ');
+
+  card.innerHTML = `
+    <div class="vis-transform">
+      <div class="vis-char-big in">${inChar}</div>
+      <div class="vis-arrow">→</div>
+      <div class="vis-char-big out">${outChar}</div>
+    </div>
+    <div class="vis-row"><span>Position</span><span>#${idx+1}</span></div>
+    <div class="vis-row"><span>Rotor state</span><span class="hi">${rotorState}</span></div>
+    <div class="vis-row"><span>Combined shift</span><span class="hi">${c.startShift}</span></div>
+    <div class="vis-row"><span>Rounds</span><span>${c.rounds}</span></div>
+    <div class="vis-row"><span>Unused layouts (plugboard)</span><span>${c.unusedLayouts.join(', ')||'none'}</span></div>
+    <div class="vis-pipeline">${pipelineHtml}</div>`;
+}
+
+
+// ── Hash utility (FNV-1a inspired, deterministic, no crypto API needed) ───────
+function hashStr(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
+
+// Produces a compact alphanumeric string of given length from a seed string
+function deriveSeed(passphrase, salt, len) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let out = '', h = hashStr(passphrase + '|' + salt);
+  for (let i = 0; i < len; i++) {
+    h = (Math.imul(h, 1664525) + 1013904223) >>> 0;
+    out += chars[h % chars.length];
+  }
+  return out;
+}
+
+// ── Passphrase → full key derivation ─────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+// ── Key fingerprint ───────────────────────────────────────────────────────────
+function computeFingerprint() {
+  const key = encodeKey();
+  const h = hashStr(key + 'fp');
+  const h2 = hashStr(key + 'fp2');
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let fp = '';
+  let v = h;
+  for (let i = 0; i < 4; i++) {
+    v = (Math.imul(v, 1664525) + 1013904223) >>> 0;
+    fp += chars[v % chars.length];
+  }
+  return fp;
+}
+
+// ── Message authentication checksum ──────────────────────────────────────────
+const CHECKSUM_LEN = 4; // characters appended to ciphertext
+
+function computeChecksumPos(keyStr, totalLen) {
+  // Derive insertion position from key - not always the end
+  const h = hashStr(keyStr + 'chkpos');
+  return h % Math.max(1, totalLen - CHECKSUM_LEN);
+}
+
+function computeChecksum(plaintext, keyStr) {
+  const h1 = hashStr(plaintext + '|' + keyStr + '|chk1');
+  const h2 = hashStr(plaintext + '|' + keyStr + '|chk2');
+  let out = '', v = h1 ^ (h2 << 16);
+  for (let i = 0; i < CHECKSUM_LEN; i++) {
+    v = (Math.imul(v, 1664525) + 1013904223) >>> 0;
+    out += ALPHA[v % N]; // full 68-char alphabet - blends with cipher output
+  }
+  return out;
+}
+
+
+// ── Passphrase system - word encoding of the key ─────────────────────────────
+// Key character set: digits 0-9, letters A-Z, semicolon, dot = 38 chars
+const PHRASE_CHARS = '0123456789 ';
+// New key format uses only digits and spaces, so 11 pools needed
+const PHRASE_POOLS = [
+  // 0
+  ['zero','null','nadir','origin','void','cipher-null','blank','hollow','vacant','abyss'],
+  // 1
+  ['one','unity','sole','prime','singular','alone','first','onset','initial','monad'],
+  // 2
+  ['two','pair','twin','double','duo','brace','dyad','binary','coupled','tandem'],
+  // 3
+  ['three','trio','triad','triple','trine','tercet','ternary','triplex','triune','delta-three'],
+  // 4
+  ['four','quad','quarry','quorum','tetrad','quartet','fourfold','biquad','square','compass'],
+  // 5
+  ['five','quint','penta','fiver','fifth','quinary','pentad','handful','pentet','quintet'],
+  // 6
+  ['six','hexad','sextet','sixer','helix','hexagon','sestina','sixfold','halfdozen','senary'],
+  // 7
+  ['seven','heptad','septet','seventh','seraph','heptagon','sevenfold','pleiades','septimal','hebdomad'],
+  // 8
+  ['eight','octave','octet','eighth','octad','octal','octuple','eightfold','ogdoad','octet-eight'],
+  // 9
+  ['nine','nonet','ninth','ennead','nether','nonary','ninefold','novenary','enneagram','nona'],
+  // space (section separator)
+  ['break','pause','split','gap','shift','divide','cleave','sever','mark','boundary',
+   'waypoint','segment','passage','transit','divider','relay','juncture','nexus','splice','threshold']
+];
+
+
+// Build flat reverse lookup: word -> char
+const PHRASE_WORD_MAP = {};
+PHRASE_POOLS.forEach((pool, ci) => {
+  pool.forEach(w => { PHRASE_WORD_MAP[w] = PHRASE_CHARS[ci]; });
+});
+
+function keyToPassphrase(keyStr) {
+  const occurrences = {};
+  return keyStr.toUpperCase().split('').map(c => {
+    const ci = PHRASE_CHARS.indexOf(c);
+    if (ci < 0) return null;
+    occurrences[c] = (occurrences[c] || 0);
+    const word = PHRASE_POOLS[ci][occurrences[c] % PHRASE_POOLS[ci].length];
+    occurrences[c]++;
+    return word;
+  }).filter(w => w !== null).join(' ');
+}
+
+function passphraseToKey(phrase) {
+  const words = phrase.trim().toLowerCase().split(/\s+/);
+  let key = '';
+  for (const w of words) {
+    const c = PHRASE_WORD_MAP[w];
+    if (!c && c !== '0') throw new Error('Unknown word: ' + w);
+    key += c;
+  }
+  return key;
+}
+
+function updatePhraseDisplay() {
+  const key = encodeKey();
+  const phrase = keyToPassphrase(key);
+  const el = document.getElementById('phrase-val');
+  if (el) el.textContent = phrase || '-';
+}
+
+function copyPhrase() {
+  const val = document.getElementById('phrase-val').textContent;
+  if (!val || val === '-') return;
+  copyToClipboard(val);
+  const btn = document.getElementById('phrase-display').nextElementSibling;
+  const orig = btn.textContent;
+  btn.textContent = 'Copied!'; btn.className = 'key-btn active';
+  setTimeout(() => { btn.textContent = orig; btn.className = 'key-btn'; }, 1500);
+}
+
+function onPhraseImport() {
+  const val = document.getElementById('phrase-import').value.trim();
+  const status = document.getElementById('phrase-status');
+  if (!val) { status.textContent = ''; status.className = 'key-status'; return; }
+  try {
+    const key = passphraseToKey(val);
+    decodeKey(key); // validate
+    status.textContent = '✓ Valid passphrase - click Load to apply';
+    status.className = 'key-status ok';
+  } catch(e) {
+    status.textContent = '✗ ' + e.message;
+    status.className = 'key-status err';
+  }
+}
+
+function applyPhraseImport() {
+  const val = document.getElementById('phrase-import').value.trim();
+  const status = document.getElementById('phrase-status');
+  if (!val) return;
+  try {
+    const key = passphraseToKey(val);
+    const decoded = decodeKey(key);
+    // Reuse applyImportedKey logic
+    importedKeyData = decoded;
+    applyImportedKey();
+    document.getElementById('phrase-import').value = '';
+    status.textContent = '✓ Passphrase loaded successfully';
+    status.className = 'key-status ok';
+  } catch(e) {
+    status.textContent = '✗ ' + e.message;
+    status.className = 'key-status err';
+  }
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+function init() {
+  buildLayoutGrid();
+  buildRotorSlots();
+  buildSteckBoard();
+  recompute();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+</script>
+</body>
+</html>
