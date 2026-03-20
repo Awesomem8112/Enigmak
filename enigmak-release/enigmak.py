@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+"""
+ENIGMAK v1.0.0 — Command-line cipher machine
+68-symbol multi-round substitution-permutation rotor cipher
+
+Usage:
+    python enigmak.py encrypt "YOUR MESSAGE" "KEY STRING"
+    python enigmak.py decrypt "CIPHERTEXT"  "KEY STRING"
+    python enigmak.py keygen
+    python enigmak.py ioc "CIPHERTEXT"
+
+See README.md and SPECIFICATION.md for full details.
+"""
+
+import sys
+import math
+import hashlib
+import secrets
+import argparse
+
+# ── Alphabet ──────────────────────────────────────────────────────────────────
+ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' + '!@#$%^&*()_+{}|:"<>?`~'
+N = len(ALPHA)  # 68
+assert N == 68
+
+LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
+                'Norman','Asset','Halmak','AZERTY','QWERTZ']
+
+LAYOUT_DEFS = {
+    'QWERTY':    {'top':'QWERTYUIOP', 'home':'ASDFGHJKL;', 'bot':'ZXCVBNM'},
+    'Colemak':   {'top':'QWFPGJLUY;', 'home':'ARSTDHNEIO', 'bot':'ZXCVBKM'},
+    'Colemak-DH':{'top':'QWFPBJLUY;', 'home':'ARSTGMNEIO', 'bot':'ZXCDVKH'},
+    'Dvorak':    {'top':';VZPYFGCRL', 'home':'AOEUIDHTNS', 'bot':'QJKXBMWVZ'},
+    'Workman':   {'top':'QDRWBJFUP;', 'home':'ASHTGYNEOI', 'bot':'ZXMCVKL'},
+    'Norman':    {'top':'QWDFKJURL;', 'home':'ASETGYNIOH', 'bot':'ZXCVBPM'},
+    'Asset':     {'top':'QWJFGYPUL;', 'home':'ASETDHNIOR', 'bot':'ZXCVBKM'},
+    'Halmak':    {'top':'WLRBJZFUO;', 'home':'SHNTMEDAIC', 'bot':'QGVXPKY'},
+    'AZERTY':    {'top':'AZERTYUIOP', 'home':'QSDFGHJKL;', 'bot':'WXCVBNM'},
+    'QWERTZ':    {'top':'QWERTZUIOP', 'home':'ASDFGHJKL;', 'bot':'YXCVBNM'},
+}
+
+QWERTY_TOP  = 'QWERTYUIOP'
+QWERTY_HOME = 'ASDFGHJKL;'
+QWERTY_BOT  = 'ZXCVBNM'
+
+# ── Build substitution maps ───────────────────────────────────────────────────
+def build_map(layout_name):
+    d = LAYOUT_DEFS[layout_name]
+    m = {}
+    for q, c in zip(QWERTY_TOP,  d['top']):
+        if c.upper() in ALPHA: m[q] = c.upper()
+    for q, c in zip(QWERTY_HOME, d['home']):
+        if c.upper() in ALPHA: m[q] = c.upper()
+    for q, c in zip(QWERTY_BOT,  d['bot']):
+        if c.upper() in ALPHA: m[q] = c.upper()
+    return m
+
+MAPS     = {n: build_map(n) for n in LAYOUT_NAMES}
+INV_MAPS = {n: {v:k for k,v in MAPS[n].items()} for n in LAYOUT_NAMES}
+
+# ── Hash primitive (FNV-1a inspired) ─────────────────────────────────────────
+def hash_str(s):
+    h = 2166136261
+    for c in s:
+        h ^= ord(c)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+def lcg(v):
+    return (v * 1664525 + 1013904223) & 0xFFFFFFFF
+
+# ── Key material derivation ───────────────────────────────────────────────────
+def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
+    S = sum(
+        (min(ALPHA.index(a), ALPHA.index(b)) * N + max(ALPHA.index(a), ALPHA.index(b)))
+        for a, b in steck_pairs
+    )
+    R = sum(r['pos'] for r in rotors)
+    L = sum(LAYOUT_NAMES.index(n) for n in enabled_layouts)
+    rounds = ((S + R + L + user_rounds) % 999) + 1
+    key_sum = (S * 31 + R * 17 + L * 13) & 0xFFFFFFFF
+
+    # Step mask (47/68 positions active)
+    step_pos = list(range(N))
+    v = (key_sum ^ 0x5A5A5A5A) & 0xFFFFFFFF
+    for i in range(N - 1, 0, -1):
+        v = lcg(v)
+        j = v % (i + 1)
+        step_pos[i], step_pos[j] = step_pos[j], step_pos[i]
+    step_mask = [False] * N
+    for p in step_pos[:47]:
+        step_mask[p] = True
+
+    # Diffusion transposition
+    trans_perm = list(range(N))
+    v = (key_sum ^ 0xDEAD1234) & 0xFFFFFFFF
+    for i in range(N - 1, 0, -1):
+        v = lcg(v)
+        j = v % (i + 1)
+        trans_perm[i], trans_perm[j] = trans_perm[j], trans_perm[i]
+    inv_trans_perm = [0] * N
+    for i, x in enumerate(trans_perm):
+        inv_trans_perm[x] = i
+
+    layout_key_base = key_sum % N
+    return {
+        'rounds': rounds, 'key_sum': key_sum,
+        'step_mask': step_mask,
+        'trans_perm': trans_perm, 'inv_trans_perm': inv_trans_perm,
+        'layout_key_base': layout_key_base
+    }
+
+def keyed_layout_offset(layout_name, layout_key_base):
+    return (LAYOUT_NAMES.index(layout_name) * 7 + layout_key_base) % N
+
+# ── Rotor mechanics ───────────────────────────────────────────────────────────
+def rotor_shift(rotors):
+    val = 0
+    for i, r in enumerate(rotors):
+        val += r['pos'] * (N ** (len(rotors) - 1 - i))
+    return int(val) % N
+
+def advance_rotors(rotors, char_idx, step_mask):
+    if not step_mask[char_idx % N]:
+        return [dict(r) for r in rotors]
+    rs = [dict(r) for r in rotors]
+    rs[-1]['pos'] = (rs[-1]['pos'] + 1) % N
+    for i in range(len(rs) - 1, 0, -1):
+        if rs[i]['pos'] == 0:
+            rs[i-1]['pos'] = (rs[i-1]['pos'] + 1) % N
+    return rs
+
+def apply_nonce(rotors, nonce):
+    if not nonce:
+        return rotors
+    result = []
+    for i, r in enumerate(rotors):
+        off = ALPHA.index(nonce[i]) if i < len(nonce) else 0
+        result.append({**r, 'pos': (r['pos'] + off) % N})
+    return result
+
+# ── Substitution layers ───────────────────────────────────────────────────────
+def apply_layout(c, layout_name, shift, invert):
+    if not invert:
+        x = MAPS[layout_name].get(c, c)
+        if x in ALPHA:
+            x = ALPHA[(ALPHA.index(x) + shift) % N]
+        return x
+    else:
+        x = c
+        if x in ALPHA:
+            x = ALPHA[(ALPHA.index(x) - shift) % N]
+        x = INV_MAPS[layout_name].get(x, x)
+        return x
+
+def plug_fwd(c, layouts):
+    for n in layouts:
+        c = MAPS[n].get(c, c)
+    return c
+
+def plug_inv(c, layouts):
+    for n in reversed(layouts):
+        c = INV_MAPS[n].get(c, c)
+    return c
+
+# ── Core encryption/decryption ────────────────────────────────────────────────
+def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', decrypt=False):
+    km = compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds)
+    rds = km['rounds']
+
+    # Steck map
+    steck_map = {c: c for c in ALPHA}
+    for a, b in steck_pairs:
+        steck_map[a] = b
+        steck_map[b] = a
+
+    rotor_set = {r['layout'] for r in rotors}
+    el = list(enabled_layouts)
+    unused = [n for n in el if n not in rotor_set]
+    rs = apply_nonce([dict(r) for r in rotors], nonce)
+
+    result = []
+    ci = 0
+    for c in text:
+        # Fold lowercase a-z to uppercase
+        ch = c.upper() if 'a' <= c <= 'z' else c
+        if ch not in ALPHA:
+            result.append(c)
+            continue
+
+        ss = rotor_shift(rs)
+        step_layouts = [el[r % len(el)] for r in range(rds)]
+        step_shifts = [(ss + r + keyed_layout_offset(step_layouts[r], km['layout_key_base'])) % N
+                       for r in range(rds)]
+        scramble_shifts = [(ss + rds + i + keyed_layout_offset(unused[i], km['layout_key_base'])) % N
+                           for i in range(len(unused))]
+
+        x = ch
+        if not decrypt:
+            x = steck_map[x]
+            x = plug_fwd(x, unused)
+            for r in range(rds):
+                x = apply_layout(x, step_layouts[r], step_shifts[r], False)
+            if x in ALPHA:
+                x = ALPHA[km['trans_perm'][ALPHA.index(x)]]
+            for i, n in enumerate(unused):
+                x = apply_layout(x, n, scramble_shifts[i], False)
+            x = plug_fwd(x, unused)
+            x = steck_map[x]
+        else:
+            x = steck_map[x]
+            x = plug_inv(x, unused)
+            for i in range(len(unused) - 1, -1, -1):
+                x = apply_layout(x, unused[i], scramble_shifts[i], True)
+            if x in ALPHA:
+                x = ALPHA[km['inv_trans_perm'][ALPHA.index(x)]]
+            for r in range(rds - 1, -1, -1):
+                x = apply_layout(x, step_layouts[r], step_shifts[r], True)
+            x = plug_inv(x, unused)
+            x = steck_map[x]
+
+        result.append(x)
+        rs = advance_rotors(rs, ci, km['step_mask'])
+        ci += 1
+
+    return ''.join(result)
+
+# ── Checksum ──────────────────────────────────────────────────────────────────
+CHECKSUM_LEN = 4
+
+def compute_checksum(plaintext, key_str):
+    h1 = hash_str(plaintext + '|' + key_str + '|chk1')
+    h2 = hash_str(plaintext + '|' + key_str + '|chk2')
+    v = (h1 ^ (h2 << 16)) & 0xFFFFFFFF
+    out = ''
+    for _ in range(CHECKSUM_LEN):
+        v = lcg(v)
+        out += ALPHA[v % N]
+    return out
+
+def checksum_pos(key_str, total_len):
+    h = hash_str(key_str + 'chkpos')
+    return h % max(1, total_len - CHECKSUM_LEN)
+
+def embed_checksum(ciphertext, plaintext, key_str):
+    chk = compute_checksum(plaintext, key_str)
+    pos = checksum_pos(key_str, len(ciphertext) + CHECKSUM_LEN)
+    return ciphertext[:pos] + chk + ciphertext[pos:]
+
+def strip_checksum(ciphertext, key_str):
+    pos = checksum_pos(key_str, len(ciphertext))
+    chk = ciphertext[pos:pos + CHECKSUM_LEN]
+    stripped = ciphertext[:pos] + ciphertext[pos + CHECKSUM_LEN:]
+    return stripped, chk
+
+def verify_checksum(plaintext, extracted_chk, key_str):
+    expected = compute_checksum(plaintext, key_str)
+    return extracted_chk == expected
+
+# ── Key parsing ───────────────────────────────────────────────────────────────
+def parse_key(key_str):
+    parts = key_str.strip().split()
+    if len(parts) not in (4, 5):
+        raise ValueError(f'Expected 4 or 5 sections, got {len(parts)}')
+
+    enabled_str, rotor_str, steck_str, u_str = parts[:4]
+    nonce_str = parts[4] if len(parts) == 5 else ''
+
+    enabled = [LAYOUT_NAMES[int(c)] for c in enabled_str]
+    if not enabled:
+        raise ValueError('No layouts enabled')
+
+    rotors = []
+    for i in range(0, len(rotor_str), 3):
+        lidx = int(rotor_str[i])
+        pos  = int(rotor_str[i+1:i+3])
+        rotors.append({'layout': LAYOUT_NAMES[lidx], 'pos': pos})
+    if not rotors:
+        raise ValueError('No rotors specified')
+
+    steck_pairs = []
+    if steck_str != '0':
+        for i in range(0, len(steck_str), 4):
+            ai = int(steck_str[i:i+2])
+            bi = int(steck_str[i+2:i+4])
+            steck_pairs.append((ALPHA[ai], ALPHA[bi]))
+
+    user_rounds = int(u_str)
+
+    nonce = ''
+    if nonce_str:
+        for i in range(0, len(nonce_str), 2):
+            nonce += ALPHA[int(nonce_str[i:i+2])]
+
+    return {
+        'enabled': enabled,
+        'rotors': rotors,
+        'steck_pairs': steck_pairs,
+        'user_rounds': user_rounds,
+        'nonce': nonce,
+        'key_str': key_str.strip()
+    }
+
+def encode_key(enabled, rotors, steck_pairs, user_rounds, nonce=''):
+    enabled_str = ''.join(str(LAYOUT_NAMES.index(n)) for n in enabled)
+    rotor_str   = ''.join(f'{LAYOUT_NAMES.index(r["layout"])}{r["pos"]:02d}' for r in rotors)
+    if steck_pairs:
+        steck_str = ''.join(
+            f'{min(ALPHA.index(a),ALPHA.index(b)):02d}{max(ALPHA.index(a),ALPHA.index(b)):02d}'
+            for a, b in sorted(steck_pairs, key=lambda p: min(ALPHA.index(p[0]),ALPHA.index(p[1])))
+        )
+    else:
+        steck_str = '0'
+    u_str = f'{user_rounds:03d}'
+    base = f'{enabled_str} {rotor_str} {steck_str} {u_str}'
+    if nonce:
+        nonce_str = ''.join(f'{ALPHA.index(c):02d}' for c in nonce)
+        return f'{base} {nonce_str}'
+    return base
+
+# ── IoC ───────────────────────────────────────────────────────────────────────
+def calc_ioc(text):
+    freq = {}
+    for c in ALPHA:
+        freq[c] = 0
+    for c in text:
+        if c in freq:
+            freq[c] += 1
+    L = sum(freq.values())
+    if L < 2:
+        return 0.0
+    num = sum(n * (n - 1) for n in freq.values())
+    return num / (L * (L - 1))
+
+# ── Key generation ────────────────────────────────────────────────────────────
+def generate_key(num_rotors=3, num_steck_pairs=8, num_layouts=4):
+    enabled_idxs = secrets.SystemRandom().sample(range(10), num_layouts)
+    enabled = [LAYOUT_NAMES[i] for i in enabled_idxs]
+    rotors = [
+        {'layout': LAYOUT_NAMES[secrets.choice(enabled_idxs)], 'pos': secrets.randbelow(N)}
+        for _ in range(num_rotors)
+    ]
+    chars = list(ALPHA)
+    secrets.SystemRandom().shuffle(chars)
+    steck_pairs = [(chars[i*2], chars[i*2+1]) for i in range(num_steck_pairs)]
+    user_rounds = secrets.randbelow(999) + 1
+    nonce_chars = [ALPHA[secrets.randbelow(N)] for _ in range(3)]
+    nonce = ''.join(nonce_chars)
+    return encode_key(enabled, rotors, steck_pairs, user_rounds, nonce)
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+def cmd_encrypt(plaintext, key_str):
+    k = parse_key(key_str)
+    cipher = process(plaintext, k['steck_pairs'], k['rotors'],
+                     k['enabled'], k['user_rounds'], k['nonce'], decrypt=False)
+    result = embed_checksum(cipher, plaintext, k['key_str'])
+    print(result)
+
+def cmd_decrypt(ciphertext, key_str):
+    k = parse_key(key_str)
+    stripped, chk = strip_checksum(ciphertext, k['key_str'])
+    plain = process(stripped, k['steck_pairs'], k['rotors'],
+                    k['enabled'], k['user_rounds'], k['nonce'], decrypt=True)
+    verified = verify_checksum(plain, chk, k['key_str'])
+    print(plain)
+    if verified:
+        print('[✓ Checksum verified]', file=sys.stderr)
+    else:
+        print('[✗ Checksum mismatch — wrong key or corrupted message]', file=sys.stderr)
+
+def cmd_keygen():
+    key = generate_key()
+    print(key)
+
+def cmd_ioc(ciphertext):
+    ioc = calc_ioc(ciphertext)
+    floor = 1 / N
+    print(f'IoC:   {ioc:.6f}')
+    print(f'Floor: {floor:.6f} (1/{N})')
+    print(f'Delta: {ioc - floor:+.6f}')
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='ENIGMAK v1.0.0 — 68-symbol rotor cipher',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    sub = parser.add_subparsers(dest='command')
+
+    enc = sub.add_parser('encrypt', help='Encrypt plaintext')
+    enc.add_argument('plaintext')
+    enc.add_argument('key')
+
+    dec = sub.add_parser('decrypt', help='Decrypt ciphertext')
+    dec.add_argument('ciphertext')
+    dec.add_argument('key')
+
+    sub.add_parser('keygen', help='Generate a random key')
+
+    ioc_p = sub.add_parser('ioc', help='Calculate Index of Coincidence')
+    ioc_p.add_argument('ciphertext')
+
+    args = parser.parse_args()
+
+    if args.command == 'encrypt':
+        cmd_encrypt(args.plaintext, args.key)
+    elif args.command == 'decrypt':
+        cmd_decrypt(args.ciphertext, args.key)
+    elif args.command == 'keygen':
+        cmd_keygen()
+    elif args.command == 'ioc':
+        cmd_ioc(args.ciphertext)
+    else:
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()
