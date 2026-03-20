@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 — Initial Public Release
+## v1.0.0 - Initial Public Release
 
 ### Cipher
 - 68-symbol alphabet (A–Z, ;, 0–9, special characters)

@@ -143,7 +143,7 @@ const menuTemplate = [
               'Irregular stepping · diffusion · keyed layouts\n' +
               '1-999 key-derived rounds\n\n' +
               'Keyspace: ~2.38 × 10⁶⁴\n' +
-              'Runs fully offline — no network requests.',
+              'Runs fully offline - no network requests.',
           });
         },
       },

@@ -15,7 +15,7 @@ All vectors use the 68-character alphabet:
 
 ---
 
-## Vector 2 — Special characters
+## Vector 2 - Special characters
 
 **Key:** `123 100200 0 050`
 **Plaintext:** `TEST1TEST2TEST3`
@@ -23,7 +23,7 @@ All vectors use the 68-character alphabet:
 
 ---
 
-## Vector 3 — Full alphabet stress
+## Vector 3 - Full alphabet stress
 
 **Key:** `5197 532907956112537115750740926542 0032016302350359042305310664071708410915105511141237135016391866194820542136224424422543264927452829303433573856406246534767516152586065 041 535917`
 **Plaintext:** `TEST1TEST2TEST3TEST4TEST5TEST6TEST7TEST8TEST9TEST10`

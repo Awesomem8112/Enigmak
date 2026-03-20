@@ -1,4 +1,4 @@
-# ENIGMAK v1.0.0 — Formal Specification
+# ENIGMAK v1.0.0 - Formal Specification
 
 ## 1. Overview
 
@@ -39,8 +39,8 @@ Layout 9  QWERTZ      Top: QWERTZUIOP  Home: ASDFGHJKL;  Bot: YXCVBNM
 ```
 
 For layout L, define:
-- `sub_L(c)` — substitution mapping: physical QWERTY key c → layout L output
-- `sub_L⁻¹(c)` — inverse substitution
+- `sub_L(c)` - substitution mapping: physical QWERTY key c → layout L output
+- `sub_L⁻¹(c)` - inverse substitution
 
 ---
 
@@ -75,7 +75,7 @@ For each pair (a, b) in σ, let aᵢ = Σ.index(a), bᵢ = Σ.index(b):
 S = Σ (min(aᵢ, bᵢ) × N + max(aᵢ, bᵢ))
 ```
 
-Pair ordering is normalized — min/max ensures click order does not affect S.
+Pair ordering is normalized - min/max ensures click order does not affect S.
 
 ### 5.2 Rotor position sum
 
@@ -201,7 +201,7 @@ For each character c in plaintext:
 
 ## 8. Decryption Pipeline
 
-Reverse of encryption — all operations inverted in reverse order:
+Reverse of encryption - all operations inverted in reverse order:
 
 1. Fold case
 2. Passthrough check
@@ -281,7 +281,7 @@ Approximate key strength: 325 bits at maximum configuration.
 
 - **No reflector:** Characters can encrypt to themselves
 - **No algebraic shortcut** known for the full pipeline
-- **Keyboard layout bias:** Layout substitution tables were designed for ergonomic typing, not cryptographic uniformity — theoretical non-uniformity may exist at high character counts
+- **Keyboard layout bias:** Layout substitution tables were designed for ergonomic typing, not cryptographic uniformity - theoretical non-uniformity may exist at high character counts
 - **Key reuse:** Two messages under the same key produce correlated ciphertext; key reuse is strongly discouraged
 - **Monocharacter oracle:** Encrypting a single repeated character under chosen-plaintext reveals rotor cycle structure
 - **Not formally audited:** This specification has not undergone professional cryptanalytic review

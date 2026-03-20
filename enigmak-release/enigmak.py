@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v1.0.0 — Command-line cipher machine
+ENIGMAK v1.0.0 - Command-line cipher machine
 68-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -366,7 +366,7 @@ def cmd_decrypt(ciphertext, key_str):
     if verified:
         print('[✓ Checksum verified]', file=sys.stderr)
     else:
-        print('[✗ Checksum mismatch — wrong key or corrupted message]', file=sys.stderr)
+        print('[✗ Checksum mismatch - wrong key or corrupted message]', file=sys.stderr)
 
 def cmd_keygen():
     key = generate_key()
@@ -381,7 +381,7 @@ def cmd_ioc(ciphertext):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v1.0.0 — 68-symbol rotor cipher',
+        description='ENIGMAK v1.0.0 - 68-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
