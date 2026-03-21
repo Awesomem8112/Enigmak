@@ -20,7 +20,7 @@ Do not privately disclose cryptographic weaknesses - ENIGMAK benefits from open 
 
 - **Chosen-plaintext periodicity leak (confirmed).** Encrypting repeated plaintext reveals position-mod-68 periodic structure in the ciphertext. Bucketing ciphertext characters by position mod 68 and comparing distributions yields a measurable L1 distance (~0.025) between buckets, demonstrating that different rotor positions produce detectably different output distributions. This is a structural weakness in the stepping construction, not a usage edge case. Chosen-plaintext attacks are a standard adversarial model and the design does not hold under them.
 
-- **Step mask leakage under chosen-plaintext.** Using the same bucket analysis, the deviation of each bucket from the global distribution correlates with the internal step mask at approximately 67% accuracy on a single run. The key-derived step mask is therefore partially recoverable under chosen-plaintext conditions. Credit: r/cryptography user (March 2026).
+- **Step mask leakage under chosen-plaintext.** Using the same bucket analysis, the deviation of each bucket from the global distribution correlates with the internal step mask at approximately 67% accuracy on a single run. The key-derived step mask is therefore partially recoverable under chosen-plaintext conditions. Credit: u/Demostho (March 2026).
 
 - **Keyboard layout bias.** The layouts used as rotor wirings were designed for ergonomic typing, not cryptographic uniformity. Theoretical bias may exist at scale.
 
