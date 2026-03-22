@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v2.0.0-rc.1 — Command-line cipher machine
+ENIGMAK v2.0.0-rc.2 — Command-line cipher machine
 68-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -103,6 +103,23 @@ def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
         inv_trans_perm[x] = i
 
     layout_key_base = key_sum % N
+
+    # Key-derived layout permutations -- replaces fixed keyboard layout wirings
+    # Each layout gets a unique bijective permutation of ALPHA seeded from key material
+    # This eliminates ergonomic typing bias from the substitution tables
+    layout_maps = {}
+    inv_layout_maps = {}
+    for li, name in enumerate(LAYOUT_NAMES):
+        perm = list(range(N))
+        seed = (key_sum ^ (li * 0x9E3779B9 + 0xABCD1234)) & 0xFFFFFFFF
+        v2 = seed
+        for i in range(N - 1, 0, -1):
+            v2 = lcg(v2)
+            j = v2 % (i + 1)
+            perm[i], perm[j] = perm[j], perm[i]
+        layout_maps[name] = {ALPHA[i]: ALPHA[perm[i]] for i in range(N)}
+        inv_layout_maps[name] = {ALPHA[perm[i]]: ALPHA[i] for i in range(N)}
+
     # Whitening seed: separate LCG seed for position whitening layer
     whitening_seed = (key_sum ^ 0xC0FFEE42) & 0xFFFFFFFF
     return {
@@ -110,6 +127,7 @@ def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
         'step_mask': step_mask,
         'trans_perm': trans_perm, 'inv_trans_perm': inv_trans_perm,
         'layout_key_base': layout_key_base,
+        'layout_maps': layout_maps, 'inv_layout_maps': inv_layout_maps,
         'whitening_seed': whitening_seed
     }
 
@@ -143,9 +161,9 @@ def apply_nonce(rotors, nonce):
     return result
 
 # ── Substitution layers ───────────────────────────────────────────────────────
-def apply_layout(c, layout_name, shift, invert):
+def apply_layout(c, layout_name, shift, invert, layout_maps, inv_layout_maps):
     if not invert:
-        x = MAPS[layout_name].get(c, c)
+        x = layout_maps[layout_name].get(c, c)
         if x in ALPHA:
             x = ALPHA[(ALPHA.index(x) + shift) % N]
         return x
@@ -153,17 +171,17 @@ def apply_layout(c, layout_name, shift, invert):
         x = c
         if x in ALPHA:
             x = ALPHA[(ALPHA.index(x) - shift) % N]
-        x = INV_MAPS[layout_name].get(x, x)
+        x = inv_layout_maps[layout_name].get(x, x)
         return x
 
-def plug_fwd(c, layouts):
+def plug_fwd(c, layouts, layout_maps):
     for n in layouts:
-        c = MAPS[n].get(c, c)
+        c = layout_maps[n].get(c, c)
     return c
 
-def plug_inv(c, layouts):
+def plug_inv(c, layouts, inv_layout_maps):
     for n in reversed(layouts):
-        c = INV_MAPS[n].get(c, c)
+        c = inv_layout_maps[n].get(c, c)
     return c
 
 # ── Core encryption/decryption ────────────────────────────────────────────────
@@ -181,6 +199,8 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
     el = list(enabled_layouts)
     unused = [n for n in el if n not in rotor_set]
     rs = apply_nonce([dict(r) for r in rotors], nonce)
+    lm = km['layout_maps']
+    ilm = km['inv_layout_maps']
 
     # Position whitening: LCG-derived offset per character, period 2^32
     wstate = km['whitening_seed']
@@ -204,14 +224,14 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
         x = ch
         if not decrypt:
             x = steck_map[x]
-            x = plug_fwd(x, unused)
+            x = plug_fwd(x, unused, lm)
             for r in range(rds):
-                x = apply_layout(x, step_layouts[r], step_shifts[r], False)
+                x = apply_layout(x, step_layouts[r], step_shifts[r], False, lm, ilm)
             if x in ALPHA:
                 x = ALPHA[km['trans_perm'][ALPHA.index(x)]]
             for i, n in enumerate(unused):
-                x = apply_layout(x, n, scramble_shifts[i], False)
-            x = plug_fwd(x, unused)
+                x = apply_layout(x, n, scramble_shifts[i], False, lm, ilm)
+            x = plug_fwd(x, unused, lm)
             x = steck_map[x]
             # Position whitening: add key+position LCG offset — breaks mod-N periodicity
             wstate = lcg(wstate)
@@ -221,14 +241,14 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
             wstate = lcg(wstate)
             x = ALPHA[(ALPHA.index(x) - wstate % N) % N]
             x = steck_map[x]
-            x = plug_inv(x, unused)
+            x = plug_inv(x, unused, ilm)
             for i in range(len(unused) - 1, -1, -1):
-                x = apply_layout(x, unused[i], scramble_shifts[i], True)
+                x = apply_layout(x, unused[i], scramble_shifts[i], True, lm, ilm)
             if x in ALPHA:
                 x = ALPHA[km['inv_trans_perm'][ALPHA.index(x)]]
             for r in range(rds - 1, -1, -1):
-                x = apply_layout(x, step_layouts[r], step_shifts[r], True)
-            x = plug_inv(x, unused)
+                x = apply_layout(x, step_layouts[r], step_shifts[r], True, lm, ilm)
+            x = plug_inv(x, unused, ilm)
             x = steck_map[x]
 
         result.append(x)
@@ -393,7 +413,7 @@ def cmd_ioc(ciphertext):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v2.0.0-rc.1 — 68-symbol rotor cipher',
+        description='ENIGMAK v2.0.0-rc.2 — 68-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )

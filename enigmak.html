@@ -458,10 +458,22 @@ function computeKeyMaterial() {
   // Upgrade 3: keyed layout base offset
   const layoutKeyBase = keySum % N;
 
+  // Key-derived layout permutations -- replaces fixed keyboard layout wirings
+  // Each layout gets a unique bijective permutation seeded from key material
+  const layoutMaps = {}, invLayoutMaps = {};
+  LAYOUT_NAMES.forEach((name, li) => {
+    const perm = [...Array(N).keys()];
+    let v2 = ((keySum ^ (li * 0x9E3779B9 + 0xABCD1234)) >>> 0);
+    for (let i=N-1;i>0;i--) { v2=((v2*1664525)+1013904223)>>>0; const j=v2%(i+1); [perm[i],perm[j]]=[perm[j],perm[i]]; }
+    const fwd = {}, inv = {};
+    for (let i=0;i<N;i++) { fwd[ALPHA[i]]=ALPHA[perm[i]]; inv[ALPHA[perm[i]]]=ALPHA[i]; }
+    layoutMaps[name]=fwd; invLayoutMaps[name]=inv;
+  });
+
   // Position whitening seed: separate LCG stream seed to break mod-N periodicity
   const whiteningState = (keySum ^ 0xC0FFEE42) >>> 0;
 
-  return {rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase, whiteningState};
+  return {rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase, whiteningState, layoutMaps, invLayoutMaps};
 }
 
 function keyedLayoutOffset(layoutName, layoutKeyBase) {
@@ -495,15 +507,15 @@ function applyNonce(baseRotors, nonceStr) {
   });
 }
 
-function applyLayout(char, layoutName, shift, invert) {
+function applyLayout(char, layoutName, shift, invert, lm, ilm) {
   if (!invert) {
-    let c = MAPS[layoutName][char] ?? char;
+    let c = lm[layoutName][char] ?? char;
     if (ALPHA.includes(c)) c = ALPHA[(ALPHA.indexOf(c) + shift) % N];
     return c;
   } else {
     let c = char;
     if (ALPHA.includes(c)) c = ALPHA[(ALPHA.indexOf(c) - shift + N*100) % N];
-    c = INV_MAPS[layoutName][c] ?? c;
+    c = ilm[layoutName][c] ?? c;
     return c;
   }
 }
@@ -579,8 +591,8 @@ function onSteckClick(c) {
 }
 
 // Plugboard: pure layout substitution, no shift
-function plugFwd(char, layouts) { let c=char; for(const n of layouts) c=MAPS[n][c]??c; return c; }
-function plugInv(char, layouts) { let c=char; for(let i=layouts.length-1;i>=0;i--) c=INV_MAPS[layouts[i]][c]??c; return c; }
+function plugFwd(char, layouts, lm) { let c=char; for(const n of layouts) c=lm[n][c]??c; return c; }
+function plugInv(char, layouts, ilm) { let c=char; for(let i=layouts.length-1;i>=0;i--) c=ilm[layouts[i]][c]??c; return c; }
 
 function processAll(str, startRotors, _unused_rds, dec) {
   const km = computeKeyMaterial();
@@ -616,16 +628,17 @@ function processAll(str, startRotors, _unused_rds, dec) {
     const steps = [upper];
 
     const sm = steckMap();
+    const lm = km.layoutMaps, ilm = km.invLayoutMaps;
     if (!dec) {
       steps.push(applySteck(steps[steps.length-1], sm));
-      steps.push(plugFwd(steps[steps.length-1], unusedLayouts));
-      for (let r=0; r<rds; r++) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], false));
+      steps.push(plugFwd(steps[steps.length-1], unusedLayouts, lm));
+      for (let r=0; r<rds; r++) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], false, lm, ilm));
       // Upgrade 2: diffusion transposition
       let xd = steps[steps.length-1];
       if (ALPHA.includes(xd)) xd = ALPHA[km.transPerm[ALPHA.indexOf(xd)]];
       steps.push(xd);
-      unusedLayouts.forEach((n,i) => steps.push(applyLayout(steps[steps.length-1], n, scrambleShifts[i], false)));
-      steps.push(plugFwd(steps[steps.length-1], unusedLayouts));
+      unusedLayouts.forEach((n,i) => steps.push(applyLayout(steps[steps.length-1], n, scrambleShifts[i], false, lm, ilm)));
+      steps.push(plugFwd(steps[steps.length-1], unusedLayouts, lm));
       steps.push(applySteck(steps[steps.length-1], sm));
       // Position whitening: add key+position LCG offset -- breaks mod-N periodicity
       wstate = ((wstate * 1664525) + 1013904223) >>> 0;
@@ -639,14 +652,14 @@ function processAll(str, startRotors, _unused_rds, dec) {
       if (ALPHA.includes(xw)) xw = ALPHA[(ALPHA.indexOf(xw) - wstate % N + N * 100) % N];
       steps.push(xw);
       steps.push(applySteck(steps[steps.length-1], sm));
-      steps.push(plugInv(steps[steps.length-1], unusedLayouts));
-      for (let i=unusedLayouts.length-1; i>=0; i--) steps.push(applyLayout(steps[steps.length-1], unusedLayouts[i], scrambleShifts[i], true));
+      steps.push(plugInv(steps[steps.length-1], unusedLayouts, ilm));
+      for (let i=unusedLayouts.length-1; i>=0; i--) steps.push(applyLayout(steps[steps.length-1], unusedLayouts[i], scrambleShifts[i], true, lm, ilm));
       // Inverse diffusion
       let xd = steps[steps.length-1];
       if (ALPHA.includes(xd)) xd = ALPHA[km.invTransPerm[ALPHA.indexOf(xd)]];
       steps.push(xd);
-      for (let r=rds-1; r>=0; r--) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], true));
-      steps.push(plugInv(steps[steps.length-1], unusedLayouts));
+      for (let r=rds-1; r>=0; r--) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], true, lm, ilm));
+      steps.push(plugInv(steps[steps.length-1], unusedLayouts, ilm));
       steps.push(applySteck(steps[steps.length-1], sm));
     }
 

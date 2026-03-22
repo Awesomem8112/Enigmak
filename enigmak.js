@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v2.0.0-rc.1 — JavaScript module
+ * ENIGMAK v2.0.0-rc.2 — JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -86,7 +86,19 @@ function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   const invTransPerm = new Array(N);
   transPerm.forEach((x,i) => invTransPerm[x] = i);
 
-  return { rounds, stepMask, transPerm, invTransPerm, layoutKeyBase: keySum % N };
+  // Key-derived layout permutations -- replaces fixed keyboard layout wirings
+  const layoutMaps = {}, invLayoutMaps = {};
+  LAYOUT_NAMES.forEach((name, li) => {
+    const perm = [...Array(N).keys()];
+    let v2 = ((keySum ^ (li * 0x9E3779B9 + 0xABCD1234)) >>> 0);
+    for (let i=N-1;i>0;i--) { v2=((v2*1664525)+1013904223)>>>0; const j=v2%(i+1); [perm[i],perm[j]]=[perm[j],perm[i]]; }
+    const fwd={}, inv={};
+    for (let i=0;i<N;i++) { fwd[ALPHA[i]]=ALPHA[perm[i]]; inv[ALPHA[perm[i]]]=ALPHA[i]; }
+    layoutMaps[name]=fwd; invLayoutMaps[name]=inv;
+  });
+
+  const whiteningState = (keySum ^ 0xC0FFEE42) >>> 0;
+  return { rounds, stepMask, transPerm, invTransPerm, layoutKeyBase: keySum % N, whiteningState, layoutMaps, invLayoutMaps };
 }
 
 function keyedLayoutOffset(n, b) { return (LAYOUT_NAMES.indexOf(n)*7 + b) % N; }
@@ -114,21 +126,21 @@ function applyNonce(rotors, nonce) {
   });
 }
 
-function applyLayout(c, n, s, inv) {
+function applyLayout(c, n, s, inv, lm, ilm) {
   if (!inv) {
-    let x = MAPS[n]?.[c] ?? c;
+    let x = lm[n]?.[c] ?? c;
     if (ALPHA.includes(x)) x = ALPHA[(ALPHA.indexOf(x)+s) % N];
     return x;
   } else {
     let x = c;
     if (ALPHA.includes(x)) x = ALPHA[(ALPHA.indexOf(x)-s+N*100) % N];
-    x = INV_MAPS[n]?.[x] ?? x;
+    x = ilm[n]?.[x] ?? x;
     return x;
   }
 }
 
-function plugFwd(c, ls) { let x=c; for (const n of ls) x=MAPS[n]?.[x]??x; return x; }
-function plugInv(c, ls) { let x=c; for (let i=ls.length-1;i>=0;i--) x=INV_MAPS[ls[i]]?.[x]??x; return x; }
+function plugFwd(c, ls, lm) { let x=c; for (const n of ls) x=lm[n]?.[x]??x; return x; }
+function plugInv(c, ls, ilm) { let x=c; for (let i=ls.length-1;i>=0;i--) x=ilm[ls[i]]?.[x]??x; return x; }
 
 // ── Core process ──────────────────────────────────────────────────────────────
 function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce='', decrypt=false) {
@@ -143,6 +155,7 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
   let rs = applyNonce(rotors.map(r => ({...r})), nonce);
   // Position whitening: LCG stream, period 2^32 -- breaks mod-N periodicity
   let wstate = km.whiteningState;
+  const lm = km.layoutMaps, ilm = km.invLayoutMaps;
   let result = '', ci = 0;
 
   for (const c of text) {
@@ -157,11 +170,11 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
     const sS = unused.map((_,i) => (ss+rds+i+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
     let x = ch;
     if (!decrypt) {
-      x=applySteck(x); x=plugFwd(x,unused);
-      for (let r=0;r<rds;r++) x=applyLayout(x,rL[r],rS[r],false);
+      x=applySteck(x); x=plugFwd(x,unused,lm);
+      for (let r=0;r<rds;r++) x=applyLayout(x,rL[r],rS[r],false,lm,ilm);
       if (ALPHA.includes(x)) x=ALPHA[km.transPerm[ALPHA.indexOf(x)]];
-      unused.forEach((n,i) => { x=applyLayout(x,n,sS[i],false); });
-      x=plugFwd(x,unused); x=applySteck(x);
+      unused.forEach((n,i) => { x=applyLayout(x,n,sS[i],false,lm,ilm); });
+      x=plugFwd(x,unused,lm); x=applySteck(x);
       // Position whitening (encrypt: add LCG offset)
       wstate=((wstate*1664525)+1013904223)>>>0;
       if(ALPHA.includes(x)) x=ALPHA[(ALPHA.indexOf(x)+wstate%N)%N];
@@ -169,11 +182,11 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
       // Position whitening (decrypt: subtract LCG offset first)
       wstate=((wstate*1664525)+1013904223)>>>0;
       if(ALPHA.includes(x)) x=ALPHA[(ALPHA.indexOf(x)-wstate%N+N*100)%N];
-      x=applySteck(x); x=plugInv(x,unused);
-      for (let i=unused.length-1;i>=0;i--) x=applyLayout(x,unused[i],sS[i],true);
+      x=applySteck(x); x=plugInv(x,unused,ilm);
+      for (let i=unused.length-1;i>=0;i--) x=applyLayout(x,unused[i],sS[i],true,lm,ilm);
       if (ALPHA.includes(x)) x=ALPHA[km.invTransPerm[ALPHA.indexOf(x)]];
-      for (let r=rds-1;r>=0;r--) x=applyLayout(x,rL[r],rS[r],true);
-      x=plugInv(x,unused); x=applySteck(x);
+      for (let r=rds-1;r>=0;r--) x=applyLayout(x,rL[r],rS[r],true,lm,ilm);
+      x=plugInv(x,unused,ilm); x=applySteck(x);
     }
     result += x;
     rs = advanceRotors(rs, ci, km.stepMask); ci++;
