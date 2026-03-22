@@ -12,7 +12,7 @@ If you discover a cryptographic weakness, implementation flaw, or security vulne
 - Steps to reproduce or a proof of concept
 - Your assessment of severity and exploitability
 
-Do not privately disclose cryptographic weaknesses — ENIGMAK benefits from open public scrutiny.
+Do not privately disclose cryptographic weaknesses. Remember, ENIGMAK benefits from **all** open public scrutiny.
 
 ## Known Limitations
 
