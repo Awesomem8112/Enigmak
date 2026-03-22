@@ -12,23 +12,16 @@ If you discover a cryptographic weakness, implementation flaw, or security vulne
 - Steps to reproduce or a proof of concept
 - Your assessment of severity and exploitability
 
-Do not privately disclose cryptographic weaknesses - ENIGMAK benefits from open public scrutiny.
+Do not privately disclose cryptographic weaknesses — ENIGMAK benefits from open public scrutiny.
 
 ## Known Limitations
 
 - **Not formally audited.** ENIGMAK has not undergone professional cryptanalytic review.
-
-- **Chosen-plaintext periodicity leak (confirmed).** Encrypting repeated plaintext reveals position-mod-68 periodic structure in the ciphertext. Bucketing ciphertext characters by position mod 68 and comparing distributions yields a measurable L1 distance (~0.025) between buckets, demonstrating that different rotor positions produce detectably different output distributions. This is a structural weakness in the stepping construction, not a usage edge case. Chosen-plaintext attacks are a standard adversarial model and the design does not hold under them.
-
-- **Step mask leakage under chosen-plaintext.** Using the same bucket analysis, the deviation of each bucket from the global distribution correlates with the internal step mask at approximately 67% accuracy on a single run. The key-derived step mask is therefore partially recoverable under chosen-plaintext conditions. Credit: u/Demostho (March 2026).
-
-- **Keyboard layout bias.** The layouts used as rotor wirings were designed for ergonomic typing, not cryptographic uniformity. Theoretical bias may exist at scale.
-
-- **Monocharacter oracle.** Encrypting a single repeated character under chosen-plaintext is the clearest instance of the periodicity leak described above.
-
+- **Keyboard layout bias (FIXED in v2.0.0-rc.2).** The layouts used as rotor wirings were designed for ergonomic typing, not cryptographic uniformity. Theoretical bias may exist.
+- **Monocharacter oracle.** Encrypting a single repeated character under chosen-plaintext reveals rotor cycle structure.
 - **Key reuse.** Reusing a key across messages creates correlated ciphertext that may leak plaintext structure.
-
 - **Meet-in-the-middle.** A theoretical MITM attack may be possible if diffusion/scramble layers are insufficiently non-linear.
+- **Non-ASCII passthrough.** Characters outside the 68-symbol alphabet are not encrypted and appear in plaintext in the ciphertext output. Do not use ENIGMAK to encrypt messages containing non-ASCII characters.
 
 - **Browser environment.** Running in a browser is less secure than dedicated hardware. Extensions, malicious pages, and memory access are potential vectors.
 

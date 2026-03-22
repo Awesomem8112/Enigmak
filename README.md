@@ -6,34 +6,27 @@ A custom multi-round substitution-permutation rotor cipher with a 68-symbol alph
 
 ENIGMAK has **not** undergone formal cryptanalytic review. Do not use it for classified, medical, legal, financial, or life-critical communications. For those purposes, use AES-256 or another formally audited standard. ENIGMAK is provided for educational, research, and general personal use.
 
-## Help Test v2.0.0-rc
-
-The release candidate branch is open for testing. If you find a cryptographic
-weakness, implementation bug, or statistical anomaly, please open a GitHub Issue
-tagged `rc-feedback`. See SECURITY.md for what's already known.
-
-Branch: v2.0.0-rc
-
 ## What is ENIGMAK?
 
-ENIGMAK is a browser-based cipher machine inspired by the historical Enigma rotor machine but built on a fundamentally different and significantly stronger architecture. It runs entirely offline as a single HTML file - no installation, no server, no network requests.
+ENIGMAK is a browser-based cipher machine inspired by the historical Enigma rotor machine but built on a fundamentally different and significantly stronger architecture. It runs entirely offline as a single HTML file — no installation, no server, no network requests.
 
 ## Features
 
-- **68-symbol alphabet** - A–Z, digits, semicolon, and all standard special characters
+- **68-symbol alphabet** — A–Z, digits, semicolon, and all standard special characters
 - **1–13 rotors** with irregular key-derived stepping (47/68 mask)
-- **Steckerbrett** - up to 34 symmetric character-pair swaps
+- **Steckerbrett** — up to 34 symmetric character-pair swaps
 - **Dynamic plugboard/scramble** from unused keyboard layouts
 - **10 keyboard layouts** as substitution tables (QWERTY, Colemak, Colemak-DH, Dvorak, Workman, Norman, Asset, Halmak, AZERTY, QWERTZ)
-- **Key-derived rounds** - 1–999 via `((S + R + L + U) mod 999) + 1`
-- **Diffusion layer** - keyed 68-position transposition
-- **Nonce** - prevents identical plaintexts producing identical ciphertexts
-- **Message authentication** - key-derived checksum embedded at key-derived position
-- **Key fingerprint** - 4-character verbal verification code
-- **Passphrase encoding** - word-based key representation
-- **Live IoC display** - real-time statistical quality indicator
-- **Decrypt mode warning** - full-screen amber tint
-- **Fully offline** - single HTML file, no dependencies
+- **Key-derived rounds** — 1–999 via `((S + R + L + U) mod 999) + 1`
+- **Diffusion layer** — keyed 68-position transposition
+- **Nonce** — prevents identical plaintexts producing identical ciphertexts
+- **Message authentication** — key-derived checksum embedded at key-derived position
+- **Key fingerprint** — 4-character verbal verification code
+- **Passphrase encoding** — word-based key representation
+- **ASCII only** — supports the 68-symbol ASCII alphabet. Non-ASCII characters (Cyrillic, Chinese, accented Latin, etc.) pass through unencrypted.
+- **Live IoC display** — real-time statistical quality indicator
+- **Decrypt mode warning** — full-screen amber tint
+- **Fully offline** — single HTML file, no dependencies
 
 ## Keyspace
 
@@ -43,7 +36,7 @@ ENIGMAK is a browser-based cipher machine inspired by the historical Enigma roto
 
 1. Download `enigmak.html`
 2. Open it in any modern browser
-3. No installation required - works fully offline
+3. No installation required — works fully offline
 
 ## Desktop App
 
@@ -62,7 +55,7 @@ Per-character encryption pipeline:
 7. Steckerbrett out      (symmetric swap)
 ```
 
-**No reflector** - a character can encrypt to itself. No periodic structure.
+**No reflector** — a character can encrypt to itself. No periodic structure.
 
 ## Key Format
 
@@ -71,23 +64,23 @@ Space-separated numeric format:
 [enabled] [rotors] [steck] [U] [nonce?]
 ```
 
-- `enabled` - layout digit indices concatenated
-- `rotors` - 1-digit layout + 2-digit position per rotor
-- `steck` - 4-digit pairs (2+2 char indices), `0` if none
-- `U` - 3-digit base round count (001–999)
-- `nonce` - 2-digit char indices concatenated (optional)
+- `enabled` — layout digit indices concatenated
+- `rotors` — 1-digit layout + 2-digit position per rotor
+- `steck` — 4-digit pairs (2+2 char indices), `0` if none
+- `U` — 3-digit base round count (001–999)
+- `nonce` — 2-digit char indices concatenated (optional)
 
 ## Security Notes
 
 - Never reuse a key across multiple messages
 - Never transmit a key through the same channel as ciphertext
 - Use the nonce for every message
-- The keyboard layouts serving as rotor wirings are publicly known - all security rests on the key
+- The keyboard layouts serving as rotor wirings are publicly known — all security rests on the key
 - Formal cryptanalytic review has not been completed
 
 ## License
 
-MIT License. Copyright (c) 2026 Erik Lindholm. See [LICENSE](LICENSE) for full terms.
+MIT License — see [LICENSE](LICENSE)
 
 ## Contributing
 
