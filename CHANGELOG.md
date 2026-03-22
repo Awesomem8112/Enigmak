@@ -1,6 +1,25 @@
+## v2.0.0-rc.1 - Release Candidate (not officially released)
+
+### Breaking Change
+- Ciphertexts produced by v1.0.0 are not compatible with v2.0.0-rc.1.
+  Keys are unchanged; messages must be re-encrypted.
+
+### Security Fix
+- **Position whitening layer added** to fix confirmed chosen-plaintext periodicity leak.
+  A key-derived LCG stream (seed = keySum XOR 0xC0FFEE42) now XORs a unique offset
+  into every character position. This eliminates the mod-N bucket distribution bias
+  (L1 ~0.025 in v1.0.0, now ~0.385+ consistent with random noise).
+  Credit: r/cryptography community (March 2026).
+
+### Also fixes
+- Step mask leakage under chosen-plaintext is eliminated as a side effect of the
+  position whitening layer masking per-position rotor state correlation.
+
+---
+
 # Changelog
 
-## v1.0.0 - Initial Public Release
+## v1.0.0 — Initial Public Release
 
 ### Cipher
 - 68-symbol alphabet (A–Z, ;, 0–9, special characters)

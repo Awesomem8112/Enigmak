@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ENIGMAK</title>
 <style>
-  /* System fonts - no external requests needed */
+  /* System fonts — no external requests needed */
   :root {
     --bg:#080c08; --panel:#0c110c; --panel2:#0f140f; --border:#192919;
     --green:#00ff44; --green-dim:#00882a; --green-faint:rgba(0,255,68,0.06); --green-glow:rgba(0,255,68,0.25);
@@ -250,19 +250,19 @@ function secureRandInt(max) {
     <button class="tab" id="btn-dec" onclick="setMode('dec')">◀ Decrypt</button>
   </div>
   <div class="dec-banner" style="display:none;background:rgba(255,204,0,0.12);border:1px solid var(--amber-dim);border-radius:4px;padding:6px 16px;font-size:0.6rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--amber);align-items:center;gap:8px;">
-    <span>&#9664;</span> decryption mode - output is plaintext <span>&#9664;</span>
+    <span>&#9664;</span> decryption mode — output is plaintext <span>&#9664;</span>
   </div>
 
   <!-- LAYOUT PICKER -->
   <div class="section">
-    <div class="sec-label">Available layouts - rotor-assigned layouts drive rounds; unused layouts power plugboard &amp; scramble</div>
+    <div class="sec-label">Available layouts — rotor-assigned layouts drive rounds; unused layouts power plugboard &amp; scramble</div>
     <div class="layout-grid" id="layout-grid"></div>
     <div class="warning" id="layout-warning" style="display:none">⚠ At least one layout must be selected</div>
   </div>
 
   <!-- ROTOR BUILDER -->
   <div class="section">
-    <div class="sec-label">Rotors - assign a layout and starting position to each rotor</div>
+    <div class="sec-label">Rotors — assign a layout and starting position to each rotor</div>
     <div class="rotor-slots" id="rotor-slots"></div>
     <div class="rounds-row">
       <div class="sec-label">Base rounds</div>
@@ -271,7 +271,7 @@ function secureRandInt(max) {
     </div>
     <div class="rounds-row" style="margin-top:4px;">
       <div class="sec-label">Final rounds</div>
-      <div class="rounds-computed" id="rounds-display">-</div>
+      <div class="rounds-computed" id="rounds-display">—</div>
       <div class="rounds-note">(base + key material mod 999)</div>
     </div>
   </div>
@@ -279,11 +279,11 @@ function secureRandInt(max) {
 
   <!-- STECKERBRETT -->
   <div class="section">
-    <div class="sec-label">Steckerbrett - click a letter then another to cable them together (max 13 pairs)</div>
+    <div class="sec-label">Steckerbrett — click a letter then another to cable them together (max 13 pairs)</div>
     <div class="steck-board">
       <div class="steck-alpha" id="steck-alpha"></div>
       <div class="steck-cables" id="steck-cables">
-        <span class="steck-hint">No cables connected - click two letters to pair them</span>
+        <span class="steck-hint">No cables connected — click two letters to pair them</span>
       </div>
       <div class="steck-hint" id="steck-count">0 / 34 pairs used</div>
     </div>
@@ -291,12 +291,12 @@ function secureRandInt(max) {
 
   <!-- NONCE -->
   <div class="section">
-    <div class="sec-label">Nonce - generates a unique starting state so identical plaintexts never produce identical ciphertext</div>
+    <div class="sec-label">Nonce — generates a unique starting state so identical plaintexts never produce identical ciphertext</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <div class="nonce-val" id="nonce-val">-</div>
+      <div class="nonce-val" id="nonce-val">—</div>
       <button class="key-btn" onclick="generateNonce()">Generate</button>
       <button class="key-btn" onclick="clearNonce()">Clear</button>
-      <span style="font-size:.56rem;color:var(--dim);letter-spacing:.08em;">Share this alongside your ciphertext - recipient enters it to decrypt</span>
+      <span style="font-size:.56rem;color:var(--dim);letter-spacing:.08em;">Share this alongside your ciphertext — recipient enters it to decrypt</span>
     </div>
   </div>
 
@@ -316,7 +316,7 @@ function secureRandInt(max) {
   <!-- PROCESS VISUALIZER -->
   <div class="vis-section">
     <button class="vis-toggle" id="vis-toggle-btn" onclick="toggleVis()">
-      <span>Process visualiser - click a character to inspect its transformation</span>
+      <span>Process visualiser — click a character to inspect its transformation</span>
       <span class="arrow">▼</span>
     </button>
     <div class="vis-body" id="vis-body">
@@ -331,21 +331,21 @@ function secureRandInt(max) {
 
   <!-- KEY SYSTEM -->
   <div class="section">
-    <div class="sec-label">Key - export to share settings · import to restore them</div>
+    <div class="sec-label">Key — export to share settings · import to restore them</div>
     <div class="key-system">
       <div class="key-row">
         <div class="key-display" id="key-display" onclick="copyKey()" title="Click to copy">
           <span class="key-label">KEY</span>
-          <span class="key-val" id="key-val">-</span>
+          <span class="key-val" id="key-val">—</span>
         </div>
         <button class="key-btn" id="copy-key-btn" onclick="copyKey()">Copy Key</button>
       </div>
       <div class="key-row" style="margin-top:4px;align-items:flex-start;flex-direction:column;gap:6px;">
-        <div style="font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);">Passphrase - word encoding of this key</div>
+        <div style="font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);">Passphrase — word encoding of this key</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
           <div class="key-display" id="phrase-display" onclick="copyPhrase()" title="Click to copy" style="flex:1;min-width:0;cursor:pointer;">
             <span class="key-label">PH</span>
-            <span class="key-val" id="phrase-val" style="font-size:.6rem;letter-spacing:.06em;word-break:break-all;">-</span>
+            <span class="key-val" id="phrase-val" style="font-size:.6rem;letter-spacing:.06em;word-break:break-all;">—</span>
           </div>
           <button class="key-btn" onclick="copyPhrase()">Copy</button>
         </div>
@@ -357,7 +357,7 @@ function secureRandInt(max) {
       </div>
       <div class="key-row" style="margin-top:6px;align-items:center;gap:10px;">
         <span style="font-size:.56rem;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;">Fingerprint</span>
-        <div class="fingerprint-val" id="fingerprint-val">--</div>
+        <div class="fingerprint-val" id="fingerprint-val">——</div>
         <span style="font-size:.56rem;color:var(--dim);letter-spacing:.08em;">Share verbally to confirm matching keys</span>
       </div>
       <div class="key-import-row">
@@ -434,7 +434,7 @@ let processedChars = [];
 
 // ── Key material derivation (all four upgrades) ───────────────────────────────
 function computeKeyMaterial() {
-  // Normalize each pair so lower ALPHA index is always x - prevents click-order affecting S
+  // Normalize each pair so lower ALPHA index is always x — prevents click-order affecting S
   const S = steckPairs.reduce((a,[x,y]) => { const ai=ALPHA.indexOf(x),bi=ALPHA.indexOf(y); return a + (ai<bi ? ai*N+bi : bi*N+ai); }, 0);
   const R = rotors.reduce((a,r) => a + r.pos, 0);
   const L = [...enabledLayouts].reduce((a,n) => a + LAYOUT_NAMES.indexOf(n), 0);
@@ -448,7 +448,7 @@ function computeKeyMaterial() {
   const stepMask = new Array(N).fill(false);
   stepPos.slice(0,47).forEach(p=>stepMask[p]=true); // 47/68 ≈ 70%
 
-  // Upgrade 2: diffusion - keyed 27-position transposition
+  // Upgrade 2: diffusion — keyed 27-position transposition
   const transPerm = [...Array(N).keys()];
   v = (keySum ^ 0xDEAD1234) >>> 0;
   for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[transPerm[i],transPerm[j]]=[transPerm[j],transPerm[i]];}
@@ -458,7 +458,10 @@ function computeKeyMaterial() {
   // Upgrade 3: keyed layout base offset
   const layoutKeyBase = keySum % N;
 
-  return {rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase};
+  // Position whitening seed: separate LCG stream seed to break mod-N periodicity
+  const whiteningState = (keySum ^ 0xC0FFEE42) >>> 0;
+
+  return {rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase, whiteningState};
 }
 
 function keyedLayoutOffset(layoutName, layoutKeyBase) {
@@ -539,7 +542,7 @@ function buildSteckBoard() {
 
   const cablesEl = document.getElementById('steck-cables');
   if (steckPairs.length === 0) {
-    cablesEl.innerHTML = '<span class="steck-hint">No cables connected - click two characters to pair them</span>';
+    cablesEl.innerHTML = '<span class="steck-hint">No cables connected — click two characters to pair them</span>';
   } else {
     cablesEl.innerHTML = '';
     steckPairs.forEach(([a,b]) => {
@@ -553,7 +556,7 @@ function buildSteckBoard() {
   }
 
   const countEl = document.getElementById('steck-count');
-  countEl.textContent = `${steckPairs.length} / 34 pairs used${steckPending ? ` · Waiting for partner of ${steckPending} - click another character` : ''}`;
+  countEl.textContent = `${steckPairs.length} / 34 pairs used${steckPending ? ` · Waiting for partner of ${steckPending} — click another character` : ''}`;
 }
 
 function onSteckClick(c) {
@@ -590,6 +593,8 @@ function processAll(str, startRotors, _unused_rds, dec) {
   const chars = [];
   let result = '';
   let charIndex = 0;
+  // Position whitening: LCG stream per character, period 2^32 -- breaks mod-N periodicity
+  let wstate = km.whiteningState;
 
   for (const c of str) {
     // 68-char alphabet: fold lowercase a-z to uppercase before processing
@@ -622,7 +627,17 @@ function processAll(str, startRotors, _unused_rds, dec) {
       unusedLayouts.forEach((n,i) => steps.push(applyLayout(steps[steps.length-1], n, scrambleShifts[i], false)));
       steps.push(plugFwd(steps[steps.length-1], unusedLayouts));
       steps.push(applySteck(steps[steps.length-1], sm));
+      // Position whitening: add key+position LCG offset -- breaks mod-N periodicity
+      wstate = ((wstate * 1664525) + 1013904223) >>> 0;
+      let xw = steps[steps.length-1];
+      if (ALPHA.includes(xw)) xw = ALPHA[(ALPHA.indexOf(xw) + wstate % N) % N];
+      steps.push(xw);
     } else {
+      // Position whitening (decrypt: subtract same LCG offset first)
+      wstate = ((wstate * 1664525) + 1013904223) >>> 0;
+      let xw = steps[steps.length-1];
+      if (ALPHA.includes(xw)) xw = ALPHA[(ALPHA.indexOf(xw) - wstate % N + N * 100) % N];
+      steps.push(xw);
       steps.push(applySteck(steps[steps.length-1], sm));
       steps.push(plugInv(steps[steps.length-1], unusedLayouts));
       for (let i=unusedLayouts.length-1; i>=0; i--) steps.push(applyLayout(steps[steps.length-1], unusedLayouts[i], scrambleShifts[i], true));
@@ -735,7 +750,7 @@ function addRotor() {
 function recompute() {
   let input = document.getElementById('input').value;
   if (rotors.length === 0) return;
-  // Compute keyStr once - used consistently for checksum operations
+  // Compute keyStr once — used consistently for checksum operations
   const keyStr = encodeKey();
   // In decrypt mode, extract checksum from key-derived position before processing
   let incomingChecksum = '';
@@ -762,8 +777,8 @@ function recompute() {
     const expectedChk = computeChecksum(result, keyStr);
     const match = incomingChecksum === expectedChk;
     chkVerEl.innerHTML = match
-      ? `<span class="checksum-ok">✓ Checksum verified - decryption correct</span>`
-      : `<span class="checksum-fail">✗ Checksum mismatch - wrong key or corrupted message</span>`;
+      ? `<span class="checksum-ok">✓ Checksum verified — decryption correct</span>`
+      : `<span class="checksum-fail">✗ Checksum mismatch — wrong key or corrupted message</span>`;
   } else if (chkVerEl && mode === 'enc') {
     chkVerEl.innerHTML = '';
   }
@@ -790,7 +805,7 @@ function generateNonce() {
 }
 function clearNonce() {
   nonce = '';
-  document.getElementById('nonce-val').textContent = '-';
+  document.getElementById('nonce-val').textContent = '—';
   recompute();
 }
 
@@ -863,7 +878,7 @@ function encodeKey() {
 function decodeKey(key) {
   // Detect legacy format (contains dot separator)
   if (key.includes('.')) {
-    throw new Error('Legacy key format detected - keys must be regenerated for the 68-character alphabet');
+    throw new Error('Legacy key format detected — keys must be regenerated for the 68-character alphabet');
   }
   const parts = key.trim().split(/\s+/);
   if (parts.length < 4 || parts.length > 5) throw new Error('Expected 4 or 5 space-separated sections');
@@ -942,7 +957,7 @@ function onKeyImport() {
     importedKeyData = decodeKey(val);
     const d = importedKeyData;
     input.className='key-import-input ok';
-    const nonceNote2 = d.newNonce ? ' · nonce ' + d.newNonce : ''; status.textContent = '✓ Valid - ' + d.newEnabled.length + ' layouts · ' + d.newRotors.length + ' rotor(s) · ' + d.newSteck.length + ' steck pair(s) · base rounds ' + (d.newU||13) + ' · 68-char alphabet' + nonceNote2;
+    const nonceNote2 = d.newNonce ? ' · nonce ' + d.newNonce : ''; status.textContent = '✓ Valid — ' + d.newEnabled.length + ' layouts · ' + d.newRotors.length + ' rotor(s) · ' + d.newSteck.length + ' steck pair(s) · base rounds ' + (d.newU||13) + ' · 68-char alphabet' + nonceNote2;
     status.className='key-status ok';
   } catch(e) {
     importedKeyData = null;
@@ -968,7 +983,7 @@ function applyImportedKey() {
 
   // Restore nonce if present in key
   nonce = newNonce || '';
-  document.getElementById('nonce-val').textContent = nonce || '-';
+  document.getElementById('nonce-val').textContent = nonce || '—';
 
   document.getElementById('key-import').value = '';
   document.getElementById('key-import').className = 'key-import-input';
@@ -999,7 +1014,7 @@ function legacyCopy(text) {
 }
 function copyKey() {
   const val = document.getElementById('key-val').textContent;
-  if (!val || val === '-') return;
+  if (!val || val === '—') return;
   copyToClipboard(val);
   const btn = document.getElementById('copy-key-btn');
   const orig = btn.textContent;
@@ -1012,7 +1027,7 @@ function updateKeyHint() {
   document.getElementById('key-val').textContent = key;
   const km = computeKeyMaterial();
   const rotorSummary = rotors.map(r=>r.layout[0]+ALPHA[r.pos]).join('-');
-  const nonceLabel = nonce ? nonce : '-';
+  const nonceLabel = nonce ? nonce : '—';
   document.getElementById('key-hint').innerHTML =
     `<span style="color:var(--dim)">Rotors:</span> <span class="amb">${rotorSummary}</span> &nbsp;·&nbsp; `+
     `<span style="color:var(--dim)">Base:</span> <span class="amb">${userRounds}</span> &nbsp;`+
@@ -1055,7 +1070,7 @@ function updateKeyHint() {
     const inVal = document.getElementById('input').value;
     if (mode === 'dec' && outVal.length >= CHECKSUM_LEN) {
       // In dec mode: input is ciphertext with appended checksum
-      // We can't verify here easily without re-encrypting - show status from enc side instead
+      // We can't verify here easily without re-encrypting — show status from enc side instead
       chkEl.innerHTML = '';
     } else if (mode === 'enc' && outVal.length > CHECKSUM_LEN) {
       const chkPos = computeChecksumPos(encodeKey(), outVal.length);
@@ -1133,7 +1148,7 @@ function renderVisCard(idx) {
   const inChar = c.upper;
   const outChar = c.out.toUpperCase();
 
-  // Build compact pipeline - just show key stages, not every round
+  // Build compact pipeline — just show key stages, not every round
   const steps = c.steps;
   const stageNames = [];
   if (!dec) {
@@ -1241,7 +1256,7 @@ function computeFingerprint() {
 const CHECKSUM_LEN = 4; // characters appended to ciphertext
 
 function computeChecksumPos(keyStr, totalLen) {
-  // Derive insertion position from key - not always the end
+  // Derive insertion position from key — not always the end
   const h = hashStr(keyStr + 'chkpos');
   return h % Math.max(1, totalLen - CHECKSUM_LEN);
 }
@@ -1252,13 +1267,13 @@ function computeChecksum(plaintext, keyStr) {
   let out = '', v = h1 ^ (h2 << 16);
   for (let i = 0; i < CHECKSUM_LEN; i++) {
     v = (Math.imul(v, 1664525) + 1013904223) >>> 0;
-    out += ALPHA[v % N]; // full 68-char alphabet - blends with cipher output
+    out += ALPHA[v % N]; // full 68-char alphabet — blends with cipher output
   }
   return out;
 }
 
 
-// ── Passphrase system - word encoding of the key ─────────────────────────────
+// ── Passphrase system — word encoding of the key ─────────────────────────────
 // Key character set: digits 0-9, letters A-Z, semicolon, dot = 38 chars
 const PHRASE_CHARS = '0123456789 ';
 // New key format uses only digits and spaces, so 11 pools needed
@@ -1322,12 +1337,12 @@ function updatePhraseDisplay() {
   const key = encodeKey();
   const phrase = keyToPassphrase(key);
   const el = document.getElementById('phrase-val');
-  if (el) el.textContent = phrase || '-';
+  if (el) el.textContent = phrase || '—';
 }
 
 function copyPhrase() {
   const val = document.getElementById('phrase-val').textContent;
-  if (!val || val === '-') return;
+  if (!val || val === '—') return;
   copyToClipboard(val);
   const btn = document.getElementById('phrase-display').nextElementSibling;
   const orig = btn.textContent;
@@ -1342,7 +1357,7 @@ function onPhraseImport() {
   try {
     const key = passphraseToKey(val);
     decodeKey(key); // validate
-    status.textContent = '✓ Valid passphrase - click Load to apply';
+    status.textContent = '✓ Valid passphrase — click Load to apply';
     status.className = 'key-status ok';
   } catch(e) {
     status.textContent = '✗ ' + e.message;

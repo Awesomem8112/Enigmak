@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v1.0.0 - JavaScript module
+ * ENIGMAK v2.0.0-rc.1 — JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -141,6 +141,8 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
   const el = [...enabledLayouts];
   const unused = el.filter(n => !rotorSet.has(n));
   let rs = applyNonce(rotors.map(r => ({...r})), nonce);
+  // Position whitening: LCG stream, period 2^32 -- breaks mod-N periodicity
+  let wstate = km.whiteningState;
   let result = '', ci = 0;
 
   for (const c of text) {
@@ -160,7 +162,13 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
       if (ALPHA.includes(x)) x=ALPHA[km.transPerm[ALPHA.indexOf(x)]];
       unused.forEach((n,i) => { x=applyLayout(x,n,sS[i],false); });
       x=plugFwd(x,unused); x=applySteck(x);
+      // Position whitening (encrypt: add LCG offset)
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      if(ALPHA.includes(x)) x=ALPHA[(ALPHA.indexOf(x)+wstate%N)%N];
     } else {
+      // Position whitening (decrypt: subtract LCG offset first)
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      if(ALPHA.includes(x)) x=ALPHA[(ALPHA.indexOf(x)-wstate%N+N*100)%N];
       x=applySteck(x); x=plugInv(x,unused);
       for (let i=unused.length-1;i>=0;i--) x=applyLayout(x,unused[i],sS[i],true);
       if (ALPHA.includes(x)) x=ALPHA[km.invTransPerm[ALPHA.indexOf(x)]];

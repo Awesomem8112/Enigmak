@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v1.0.0 - Command-line cipher machine
+ENIGMAK v2.0.0-rc.1 — Command-line cipher machine
 68-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -103,11 +103,14 @@ def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
         inv_trans_perm[x] = i
 
     layout_key_base = key_sum % N
+    # Whitening seed: separate LCG seed for position whitening layer
+    whitening_seed = (key_sum ^ 0xC0FFEE42) & 0xFFFFFFFF
     return {
         'rounds': rounds, 'key_sum': key_sum,
         'step_mask': step_mask,
         'trans_perm': trans_perm, 'inv_trans_perm': inv_trans_perm,
-        'layout_key_base': layout_key_base
+        'layout_key_base': layout_key_base,
+        'whitening_seed': whitening_seed
     }
 
 def keyed_layout_offset(layout_name, layout_key_base):
@@ -179,6 +182,8 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
     unused = [n for n in el if n not in rotor_set]
     rs = apply_nonce([dict(r) for r in rotors], nonce)
 
+    # Position whitening: LCG-derived offset per character, period 2^32
+    wstate = km['whitening_seed']
     result = []
     ci = 0
     for c in text:
@@ -190,9 +195,10 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
 
         ss = rotor_shift(rs)
         step_layouts = [el[r % len(el)] for r in range(rds)]
-        step_shifts = [(ss + r + keyed_layout_offset(step_layouts[r], km['layout_key_base'])) % N
+        # Mix absolute position (ci) into shifts — breaks mod-N periodicity
+        step_shifts = [(ss + r + ci + keyed_layout_offset(step_layouts[r], km['layout_key_base'])) % N
                        for r in range(rds)]
-        scramble_shifts = [(ss + rds + i + keyed_layout_offset(unused[i], km['layout_key_base'])) % N
+        scramble_shifts = [(ss + rds + i + ci + keyed_layout_offset(unused[i], km['layout_key_base'])) % N
                            for i in range(len(unused))]
 
         x = ch
@@ -207,7 +213,13 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
                 x = apply_layout(x, n, scramble_shifts[i], False)
             x = plug_fwd(x, unused)
             x = steck_map[x]
+            # Position whitening: add key+position LCG offset — breaks mod-N periodicity
+            wstate = lcg(wstate)
+            x = ALPHA[(ALPHA.index(x) + wstate % N) % N]
         else:
+            # Remove position whitening first (subtract same LCG offset)
+            wstate = lcg(wstate)
+            x = ALPHA[(ALPHA.index(x) - wstate % N) % N]
             x = steck_map[x]
             x = plug_inv(x, unused)
             for i in range(len(unused) - 1, -1, -1):
@@ -366,7 +378,7 @@ def cmd_decrypt(ciphertext, key_str):
     if verified:
         print('[✓ Checksum verified]', file=sys.stderr)
     else:
-        print('[✗ Checksum mismatch - wrong key or corrupted message]', file=sys.stderr)
+        print('[✗ Checksum mismatch — wrong key or corrupted message]', file=sys.stderr)
 
 def cmd_keygen():
     key = generate_key()
@@ -381,7 +393,7 @@ def cmd_ioc(ciphertext):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v1.0.0 - 68-symbol rotor cipher',
+        description='ENIGMAK v2.0.0-rc.1 — 68-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
