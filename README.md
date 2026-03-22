@@ -6,6 +6,14 @@ A custom multi-round substitution-permutation rotor cipher with a 68-symbol alph
 
 ENIGMAK has **not** undergone formal cryptanalytic review. Do not use it for classified, medical, legal, financial, or life-critical communications. For those purposes, use AES-256 or another formally audited standard. ENIGMAK is provided for educational, research, and general personal use.
 
+## Help Test v2.0.0-rc
+
+The release candidate branch is open for testing. If you find a cryptographic
+weakness, implementation bug, or statistical anomaly, please open a GitHub Issue
+tagged `rc-feedback`. See SECURITY.md for what's already known.
+
+Branch: v2.0.0-rc
+
 ## What is ENIGMAK?
 
 ENIGMAK is a browser-based cipher machine inspired by the historical Enigma rotor machine but built on a fundamentally different and significantly stronger architecture. It runs entirely offline as a single HTML file - no installation, no server, no network requests.
