@@ -40,7 +40,7 @@ ENIGMAK is a browser-based cipher machine inspired by the historical Enigma roto
 
 ## GitHub.io
 
-See the [GitHub.io](https://awesomem8112.github.io/Enigmak/) site to see how Enigmak works before downloading the files.
+See the [GitHub.io](https://awesomem8112.github.io/Enigmak/) site to see how Enigmak works before downloading.
 
 ## Desktop App
 
