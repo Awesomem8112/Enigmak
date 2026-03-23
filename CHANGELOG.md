@@ -14,7 +14,7 @@
 
 ---
 
-## v2.0.0-rc.1 - Release Candidate (not officially released)
+## v2.0.0-rc.1 - Release Candidate 1 (not officially released)
 
 ### Breaking Change
 - Ciphertexts produced by v1.0.0 are not compatible with v2.0.0-rc.1.
