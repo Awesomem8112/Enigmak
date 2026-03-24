@@ -8,25 +8,25 @@ ENIGMAK has **not** undergone formal cryptanalytic review. Do not use it for cla
 
 ## What is ENIGMAK?
 
-ENIGMAK is a browser-based cipher machine inspired by the historical Enigma rotor machine but built on a fundamentally different and significantly stronger architecture. It runs entirely offline as a single HTML file — no installation, no server, no network requests.
+ENIGMAK is a browser-based cipher machine inspired by the historical Enigma rotor machine but built on a fundamentally different and significantly stronger architecture. It runs entirely offline as a single HTML file - no installation, no server, no network requests.
 
 ## Features
 
-- **68-symbol alphabet** — A–Z, digits, semicolon, and all standard special characters
+- **68-symbol alphabet** - A–Z, digits, semicolon, and all standard special characters
 - **1–13 rotors** with irregular key-derived stepping (47/68 mask)
-- **Steckerbrett** — up to 34 symmetric character-pair swaps
+- **Steckerbrett** - up to 34 symmetric character-pair swaps
 - **Dynamic plugboard/scramble** from unused keyboard layouts
 - **10 keyboard layouts** as substitution tables (QWERTY, Colemak, Colemak-DH, Dvorak, Workman, Norman, Asset, Halmak, AZERTY, QWERTZ)
-- **Key-derived rounds** — 1–999 via `((S + R + L + U) mod 999) + 1`
-- **Diffusion layer** — keyed 68-position transposition
+- **Key-derived rounds** - 1–999 via `((S + R + L + U) mod 999) + 1`
+- **Diffusion layer** - keyed 68-position transposition
 - **Nonce** — prevents identical plaintexts producing identical ciphertexts
-- **Message authentication** — key-derived checksum embedded at key-derived position
-- **Key fingerprint** — 4-character verbal verification code
-- **Passphrase encoding** — word-based key representation
-- **ASCII only** — supports the 68-symbol ASCII alphabet. Non-ASCII characters (Cyrillic, Chinese, accented Latin, etc.) pass through unencrypted.
-- **Live IoC display** — real-time statistical quality indicator
-- **Decrypt mode warning** — full-screen amber tint
-- **Fully offline** — single HTML file, no dependencies
+- **Message authentication** - key-derived checksum embedded at key-derived position
+- **Key fingerprint** - 4-character verbal verification code
+- **Passphrase encoding** - word-based key representation
+- **ASCII only** - supports the 68-symbol ASCII alphabet. Non-ASCII characters (Cyrillic, Chinese, accented Latin, etc.) pass through unencrypted.
+- **Live IoC display** - real-time statistical quality indicator
+- **Decrypt mode warning** - full-screen amber tint
+- **Fully offline** - single HTML file, no dependencies
 
 ## Keyspace
 
@@ -36,7 +36,7 @@ ENIGMAK is a browser-based cipher machine inspired by the historical Enigma roto
 
 1. Download `enigmak.html`
 2. Open it in any modern browser
-3. No installation required — works fully offline
+3. No installation required - works fully offline
 
 ## GitHub.io
 
@@ -59,7 +59,7 @@ Per-character encryption pipeline:
 7. Steckerbrett out      (symmetric swap)
 ```
 
-**No reflector** — a character can encrypt to itself. No periodic structure.
+**No reflector** - a character can encrypt to itself. No periodic structure.
 
 ## Key Format
 
@@ -68,11 +68,11 @@ Space-separated numeric format:
 [enabled] [rotors] [steck] [U] [nonce?]
 ```
 
-- `enabled` — layout digit indices concatenated
-- `rotors` — 1-digit layout + 2-digit position per rotor
-- `steck` — 4-digit pairs (2+2 char indices), `0` if none
-- `U` — 3-digit base round count (001–999)
-- `nonce` — 2-digit char indices concatenated (optional)
+- `enabled` - layout digit indices concatenated
+- `rotors` - 1-digit layout + 2-digit position per rotor
+- `steck` - 4-digit pairs (2+2 char indices), `0` if none
+- `U` - 3-digit base round count (001–999)
+- `nonce` - 2-digit char indices concatenated (optional)
 
 ## Security Notes
 
@@ -84,7 +84,7 @@ Space-separated numeric format:
 
 ## License
 
-MIT License — see [LICENSE](LICENSE)
+MIT License - see [LICENSE](LICENSE)
 
 ## Contributing
 
