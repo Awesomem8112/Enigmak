@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ENIGMAK</title>
 <style>
-  /* System fonts — no external requests needed */
+  /* System fonts - no external requests needed */
   :root {
     --bg:#080c08; --panel:#0c110c; --panel2:#0f140f; --border:#192919;
     --green:#00ff44; --green-dim:#00882a; --green-faint:rgba(0,255,68,0.06); --green-glow:rgba(0,255,68,0.25);
@@ -448,7 +448,7 @@ function computeKeyMaterial() {
   const stepMask = new Array(N).fill(false);
   stepPos.slice(0,47).forEach(p=>stepMask[p]=true); // 47/68 ≈ 70%
 
-  // Upgrade 2: diffusion — keyed 27-position transposition
+  // Upgrade 2: diffusion - keyed 27-position transposition
   const transPerm = [...Array(N).keys()];
   v = (keySum ^ 0xDEAD1234) >>> 0;
   for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[transPerm[i],transPerm[j]]=[transPerm[j],transPerm[i]];}
@@ -1237,7 +1237,7 @@ function deriveSeed(passphrase, salt, len) {
   return out;
 }
 
-// ── Passphrase → full key derivation ─────────────────────────────────────────
+// ── Passphrase → full key derivation (DO NOT DELETE THIS TITLE, THE CODE WILL NOT WORK. SOMEONE PLEASE FIX THIS, I CAN'T FIGURE IT OUT FOR THE LIFE OF ME) ─────────────────────────────────────────
 
 
 
@@ -1286,7 +1286,7 @@ function computeChecksum(plaintext, keyStr) {
 }
 
 
-// ── Passphrase system — word encoding of the key ─────────────────────────────
+// ── Passphrase system - word encoding of the key ─────────────────────────────
 // Key character set: digits 0-9, letters A-Z, semicolon, dot = 38 chars
 const PHRASE_CHARS = '0123456789 ';
 // New key format uses only digits and spaces, so 11 pools needed
