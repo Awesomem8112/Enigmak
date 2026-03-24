@@ -37,6 +37,10 @@ ENIGMAK is a browser-based cipher machine inspired by the historical Enigma roto
 2. Open it in any modern browser
 3. No installation required - works fully offline
 
+## GitHub.io
+
+See the [GitHub.io](https://awesomem8112.github.io/Enigmak/) site to see how Enigmak works before downloading.
+
 ## Desktop App
 
 See the [Electron wrapper](electron/) for a standalone desktop application (Windows, macOS, Linux).
