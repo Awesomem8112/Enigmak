@@ -19,7 +19,7 @@ ENIGMAK is a browser-based cipher machine inspired by the historical Enigma roto
 - **10 keyboard layouts** as substitution tables (QWERTY, Colemak, Colemak-DH, Dvorak, Workman, Norman, Asset, Halmak, AZERTY, QWERTZ)
 - **Key-derived rounds** - 1–999 via `((S + R + L + U) mod 999) + 1`
 - **Diffusion layer** - keyed 68-position transposition
-- **Nonce** — prevents identical plaintexts producing identical ciphertexts
+- **Nonce** - prevents identical plaintexts producing identical ciphertexts
 - **Message authentication** - key-derived checksum embedded at key-derived position
 - **Key fingerprint** - 4-character verbal verification code
 - **Passphrase encoding** - word-based key representation
