@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v2.0.0-rc.2 — JavaScript module
+ * ENIGMAK v2.0.0-rc.3 - JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -62,6 +62,15 @@ function hashStr(s) {
 }
 
 function lcg(v) { return (Math.imul(v, 1664525) + 1013904223) >>> 0; }
+
+function rotorStateHash(rotors) {
+  let h = 2166136261;
+  for (const r of rotors) {
+    h ^= r.pos * 73;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
 
 // ── Key material derivation ───────────────────────────────────────────────────
 function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
@@ -163,11 +172,14 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
     if (!ALPHA.includes(ch)) { result += c; continue; }
     const ss = rotorShift(rs);
     const rL = [], rS = [];
+    // Position offset: rotor state feedback breaks monocharacter oracle
+    const rsHash = rotorStateHash(rs);
+    const posOffset = ((km.layoutKeyBase * 37 + ci * 13 + rsHash) >>> 0) % N;
     for (let r=0;r<rds;r++) {
       const lay = el[r % el.length]; rL.push(lay);
-      rS.push((ss + r + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
+      rS.push((ss + r + ci + posOffset + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
     }
-    const sS = unused.map((_,i) => (ss+rds+i+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
+    const sS = unused.map((_,i) => (ss+rds+i+ci+posOffset+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
     let x = ch;
     if (!decrypt) {
       x=applySteck(x); x=plugFwd(x,unused,lm);
@@ -307,9 +319,30 @@ function calcIoC(text) {
   return num/(L*(L-1));
 }
 
+function calcKeyStrength(parsedKey) {
+  // Calculate theoretical keyspace in bits
+  const C = (n, k) => { if (k > n || k < 0) return 0; if (k === 0 || k === n) return 1; let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return Math.round(r); };
+  const layoutCombos = C(10, parsedKey.enabled.size);
+  const rotorCombos = Math.pow(10 * N, parsedKey.rotors.length);
+  let steckCombos = 1;
+  let remaining = N;
+  for (let i = 0; i < parsedKey.steckPairs.length; i++) {
+    steckCombos *= C(remaining, 2);
+    remaining -= 2;
+  }
+  if (parsedKey.steckPairs.length > 0) steckCombos = Math.round(steckCombos / factorial(parsedKey.steckPairs.length));
+  const roundCombos = 999;
+  const nonceCombos = parsedKey.nonce ? Math.pow(N, 3) : 1;
+  const total = layoutCombos * rotorCombos * steckCombos * roundCombos * nonceCombos;
+  const bits = Math.log2(total);
+  return { bits, total };
+}
+
+function factorial(n) { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; }
+
 // Export
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { encrypt, decrypt, generateKey, calcIoC, parseKey, encodeKey, ALPHA, N };
+  module.exports = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, ALPHA, N };
 } else if (typeof window !== 'undefined') {
-  window.ENIGMAK = { encrypt, decrypt, generateKey, calcIoC, parseKey, encodeKey, ALPHA, N };
+  window.ENIGMAK = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, ALPHA, N };
 }

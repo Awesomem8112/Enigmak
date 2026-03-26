@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v2.0.0-rc.2 — Command-line cipher machine
+ENIGMAK v2.0.0-rc.3 - Command-line cipher machine
 68-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -68,6 +68,14 @@ def hash_str(s):
 
 def lcg(v):
     return (v * 1664525 + 1013904223) & 0xFFFFFFFF
+
+def rotor_state_hash(rotors):
+    """Compute a digest of current rotor state for position offset feedback."""
+    h = 2166136261
+    for r in rotors:
+        h ^= r['pos'] * 73
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
 
 # ── Key material derivation ───────────────────────────────────────────────────
 def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
@@ -215,10 +223,14 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
 
         ss = rotor_shift(rs)
         step_layouts = [el[r % len(el)] for r in range(rds)]
-        # Mix absolute position (ci) into shifts — breaks mod-N periodicity
-        step_shifts = [(ss + r + ci + keyed_layout_offset(step_layouts[r], km['layout_key_base'])) % N
+        # Position offset: rotor state feedback breaks monocharacter oracle
+        # Same plaintext produces different rotor queries each encryption due to state dependency
+        rs_hash = rotor_state_hash(rs)
+        pos_offset = (km['key_sum'] * 37 + ci * 13 + rs_hash) % N
+        # Mix absolute position (ci) into shifts - breaks mod-N periodicity
+        step_shifts = [(ss + r + ci + pos_offset + keyed_layout_offset(step_layouts[r], km['layout_key_base'])) % N
                        for r in range(rds)]
-        scramble_shifts = [(ss + rds + i + ci + keyed_layout_offset(unused[i], km['layout_key_base'])) % N
+        scramble_shifts = [(ss + rds + i + ci + pos_offset + keyed_layout_offset(unused[i], km['layout_key_base'])) % N
                            for i in range(len(unused))]
 
         x = ch
@@ -233,7 +245,7 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
                 x = apply_layout(x, n, scramble_shifts[i], False, lm, ilm)
             x = plug_fwd(x, unused, lm)
             x = steck_map[x]
-            # Position whitening: add key+position LCG offset — breaks mod-N periodicity
+            # Position whitening: add key+position LCG offset - breaks mod-N periodicity
             wstate = lcg(wstate)
             x = ALPHA[(ALPHA.index(x) + wstate % N) % N]
         else:
@@ -364,6 +376,55 @@ def calc_ioc(text):
     num = sum(n * (n - 1) for n in freq.values())
     return num / (L * (L - 1))
 
+def calc_key_strength(parsed_key):
+    """
+    Calculate theoretical key strength (bits) for a parsed key.
+    Components:
+      - Enabled layouts: C(10, k) where k = len(enabled)
+      - Rotors: (10 * 68)^n where n = len(rotors)
+      - Stecker pairs: depends on number of pairs (each pair removes 2! permutations)
+      - User rounds: 999 possibilities (1-999)
+      - Nonce: optional 68^3 possibilities
+    Returns: (bits, keyspace_str)
+    """
+    import math
+    
+    # Layouts: C(10, k)
+    k = len(parsed_key['enabled'])
+    layout_combos = math.comb(10, k)
+    
+    # Rotors: each rotor can be any of 10 layouts at 68 positions
+    num_rotors = len(parsed_key['rotors'])
+    rotor_combos = (10 * 68) ** num_rotors
+    
+    # Stecker: C(68, 2k) * k! for k pairs (symmetric, so divided by 2^k)
+    # But we store as unordered pairs, so it's just ways to choose 2k chars from 68
+    # For k pairs: C(68, 2k) * (2k)! / (2^k * k!) = C(68, 2k) * (2k-1)!! 
+    # Simpler: number of ways to partition 2k items into k unordered pairs
+    num_pairs = len(parsed_key['steck_pairs'])
+    if num_pairs == 0:
+        steck_combos = 1
+    else:
+        # C(68, 2*num_pairs) * (2*num_pairs-1)!! / num_pairs!
+        # But we implement: C(68, 2k) for choosing chars, then partition into pairs
+        steck_combos = 1
+        remaining = 68
+        for i in range(num_pairs):
+            steck_combos *= math.comb(remaining, 2)
+            remaining -= 2
+        steck_combos //= math.factorial(num_pairs)  # unordered pairs
+    
+    # Rounds: 999 (1-999)
+    round_combos = 999
+    
+    # Nonce: 68^3 if present
+    nonce_combos = (68 ** 3) if parsed_key['nonce'] else 1
+    
+    total = layout_combos * rotor_combos * steck_combos * round_combos * nonce_combos
+    bits = math.log2(total)
+    
+    return bits, total
+
 # ── Key generation ────────────────────────────────────────────────────────────
 def generate_key(num_rotors=3, num_steck_pairs=8, num_layouts=4):
     enabled_idxs = secrets.SystemRandom().sample(range(10), num_layouts)
@@ -398,7 +459,7 @@ def cmd_decrypt(ciphertext, key_str):
     if verified:
         print('[✓ Checksum verified]', file=sys.stderr)
     else:
-        print('[✗ Checksum mismatch — wrong key or corrupted message]', file=sys.stderr)
+        print('[✗ Checksum mismatch - wrong key or corrupted message]', file=sys.stderr)
 
 def cmd_keygen():
     key = generate_key()
@@ -411,9 +472,15 @@ def cmd_ioc(ciphertext):
     print(f'Floor: {floor:.6f} (1/{N})')
     print(f'Delta: {ioc - floor:+.6f}')
 
+def cmd_keystrength(key_str):
+    k = parse_key(key_str)
+    bits, keyspace = calc_key_strength(k)
+    print(f'Key strength: {bits:.1f} bits (~2^{bits:.1f})')
+    print(f'Keyspace: {keyspace:.3e}')
+
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v2.0.0-rc.2 — 68-symbol rotor cipher',
+        description='ENIGMAK v2.0.0-rc.3 - 68-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -432,6 +499,9 @@ def main():
     ioc_p = sub.add_parser('ioc', help='Calculate Index of Coincidence')
     ioc_p.add_argument('ciphertext')
 
+    strength_p = sub.add_parser('keystrength', help='Calculate key strength in bits')
+    strength_p.add_argument('key')
+
     args = parser.parse_args()
 
     if args.command == 'encrypt':
@@ -442,6 +512,8 @@ def main():
         cmd_keygen()
     elif args.command == 'ioc':
         cmd_ioc(args.ciphertext)
+    elif args.command == 'keystrength':
+        cmd_keystrength(args.key)
     else:
         parser.print_help()
 

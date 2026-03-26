@@ -1,3 +1,25 @@
+## v2.0.0-rc.3 - Release Candidate 3 (not officially released)
+
+### Breaking Change
+- Ciphertexts from v2.0.0-rc.2 and earlier are not compatible with rc.3.
+
+### Security Fix
+- **Rotor state feedback in position offsets** fixes monocharacter oracle.
+  Each character's round and scramble shifts now incorporate a digest of the
+  current rotor state (FNV-1a hash) combined with position and key material.
+  This creates a cryptographic feedback loop: rotor state after character N
+  influences offsets for character N+1. Encrypting repeated characters
+  (plaintext "AAAA") now produces different rotor query indices across runs,
+  preventing cycle extraction even under worst-case settings (1 layout, 1 rotor,
+  0 stecker pairs, 1 round).
+
+### New Features
+- **Command-line key strength calculation** (Python CLI: `enigmak.py keystrength <key>`).
+  Calculates theoretical keyspace in bits across layouts, rotors, stecker pairs,
+  rounds, and optional nonce. Available in Python, JavaScript, and HTML versions.
+
+---
+
 ## v2.0.0-rc.2 - Release Candidate 2 (not officially released)
 
 ### Breaking Change
@@ -14,7 +36,7 @@
 
 ---
 
-## v2.0.0-rc.1 - Release Candidate 1 (not officially released)
+## v2.0.0-rc.1 - Release Candidate (not officially released)
 
 ### Breaking Change
 - Ciphertexts produced by v1.0.0 are not compatible with v2.0.0-rc.1.
@@ -35,7 +57,7 @@
 
 # Changelog
 
-## v1.0.0 — Initial Public Release
+## v1.0.0 - Initial Public Release
 
 ### Cipher
 - 68-symbol alphabet (A–Z, ;, 0–9, special characters)
