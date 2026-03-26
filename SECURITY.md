@@ -18,7 +18,7 @@ Do not privately disclose cryptographic weaknesses. Remember, ENIGMAK benefits f
 
 - **Not formally audited.** ENIGMAK has not undergone professional cryptanalytic review.
 - **Keyboard layout bias (FIXED in v2.0.0-rc.2).** The layouts used as rotor wirings were designed for ergonomic typing, not cryptographic uniformity. Theoretical bias may exist.
-- **Monocharacter oracle.** Encrypting a single repeated character under chosen-plaintext reveals rotor cycle structure.
+- **Monocharacter oracle (FIXED in v2.0.0-rc.3).** Encrypting a single repeated character under chosen-plaintext reveals rotor cycle structure.
 - **Key reuse.** Reusing a key across messages creates correlated ciphertext that may leak plaintext structure.
 - **Meet-in-the-middle.** A theoretical MITM attack may be possible if diffusion/scramble layers are insufficiently non-linear.
 - **Browser environment.** Running in a browser is less secure than dedicated hardware. Extensions, malicious pages, and memory access are potential vectors.
