@@ -304,7 +304,10 @@ function secureRandInt(max) {
   <div class="io">
     <div class="io-panel">
       <div class="io-label" id="lbl-in">Plaintext</div>
-      <textarea id="input" placeholder="Type your message..." oninput="onInput()"></textarea>
+      <div id="case-warning" style="display:none;font-size:0.65rem;color:var(--amber);margin-bottom:4px;padding:4px 8px;border:1px solid var(--amber);border-radius:3px;">
+  ⚠ Lowercase letters are folded to uppercase. Case-sensitive content (e.g. URLs, passwords) will not decrypt identically.
+</div>
+<textarea id="input" placeholder="Type your message..." oninput="onInput()"></textarea>
     </div>
     <div class="io-panel">
       <div class="io-label" id="lbl-out">Ciphertext</div>
@@ -682,7 +685,7 @@ function processAll(str, startRotors, _unused_rds, dec) {
     rs = advanceRotors(rs, charIndex, km.stepMask);
     charIndex++;
   }
-  return { chars, result, rounds: rds };
+  return { chars, result, rounds: rds, finalWstate: wstate, finalRs: rs };
 }
 
 // ── UI Builders ──────────────────────────────────────────────────────────────
@@ -781,18 +784,27 @@ function recompute() {
   let incomingChecksum = '';
   if (mode === 'dec' && input.length > CHECKSUM_LEN) {
     const insertPos = computeChecksumPos(keyStr, input.length);
-    incomingChecksum = input.slice(insertPos, insertPos + CHECKSUM_LEN);
+    const encChk = input.slice(insertPos, insertPos + CHECKSUM_LEN);
     input = input.slice(0, insertPos) + input.slice(insertPos + CHECKSUM_LEN);
+    // Decrypt checksum: get cipher state after encrypting stripped input, then decrypt chk
+    const km2 = computeKeyMaterial();
+    const tmpEnc = processAll(input, applyNonce(rotors.map(r=>({...r})), nonce), 0, false);
+    incomingChecksum = _runChecksumChars(encChk, tmpEnc.finalWstate, tmpEnc.finalRs, km2, false);
   }
   const effectiveRotors = applyNonce(rotors, nonce);
-  const { chars, result, rounds } = processAll(input, effectiveRotors, 0, mode==='dec');
+  const { chars, result, rounds, finalWstate, finalRs } = processAll(input, effectiveRotors, 0, mode==='dec');
+  const lastWstate = finalWstate;
+  const lastRs = finalRs;
+  const km = computeKeyMaterial();
   processedChars = chars;
   visActiveIdx = Math.min(visActiveIdx, chars.filter(c=>!c.passthrough).length - 1);
   let displayResult = result;
   if (mode === 'enc' && result.length > 0) {
     const chk = computeChecksum(input, keyStr);
+    // Encrypt checksum chars using continuation of cipher state
+    const encChk = _runChecksumChars(chk, lastWstate, lastRs, km, true);
     const insertPos = computeChecksumPos(keyStr, result.length + CHECKSUM_LEN);
-    displayResult = result.slice(0, insertPos) + chk + result.slice(insertPos);
+    displayResult = result.slice(0, insertPos) + encChk + result.slice(insertPos);
   }
   document.getElementById('output').value = displayResult;
   document.getElementById('output').className = mode==='dec'?'dec-out':'';
@@ -815,7 +827,14 @@ function recompute() {
   if (visActiveIdx >= 0) renderVisCard(visActiveIdx);
 }
 
-function onInput() { recompute(); }
+function onInput() { recompute(); updateCaseWarning(); }
+
+function updateCaseWarning() {
+  const input = document.getElementById('input').value;
+  const hasLower = /[a-z]/.test(input);
+  const warnEl = document.getElementById('case-warning');
+  if (warnEl) warnEl.style.display = hasLower ? 'block' : 'none';
+}
 function onUserRounds() {
   userRounds = parseInt(document.getElementById('rounds-slider').value);
   document.getElementById('rounds-slider-val').textContent = userRounds;
@@ -1279,6 +1298,62 @@ function computeFingerprint() {
 
 // ── Message authentication checksum ──────────────────────────────────────────
 const CHECKSUM_LEN = 4; // characters appended to ciphertext
+
+function _runChecksumChars(chars, wstate, rs, km, enc) {
+  // Run checksum chars through the cipher pipeline (encrypt or decrypt)
+  const steckM = steckMap();
+  const rotorSet = new Set(rotors.map(r => r.layout));
+  const el = [...enabledLayouts];
+  const unused = el.filter(n => !rotorSet.has(n));
+  const lm = km.layoutMaps, ilm = km.invLayoutMaps;
+  const rds = km.rounds;
+  let result = '';
+  let ci2 = 0;
+  for (const c of chars) {
+    if (!ALPHA.includes(c)) { result += c; continue; }
+    const ss = rotorShift(rs);
+    const stepLayouts = [], stepShifts = [];
+    for (let r=0;r<rds;r++) {
+      const lay=el[r%el.length]; stepLayouts.push(lay);
+      const rsH=_rotorStateHash(rs);
+      const posOff=(km.keySum*37+ci2*13+rsH)%N;
+      stepShifts.push((ss+r+ci2+posOff+keyedLayoutOffset(lay,km.layoutKeyBase))%N);
+    }
+    const rsH2=_rotorStateHash(rs);
+    const posOff2=(km.keySum*37+ci2*13+rsH2)%N;
+    const sS=unused.map((_,i)=>(ss+rds+i+ci2+posOff2+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
+    let x=c;
+    if (enc) {
+      x=applySteck(x,steckM); x=plugFwd(x,unused,lm);
+      for(let r=0;r<rds;r++) x=applyLayout(x,stepLayouts[r],stepShifts[r],false,lm,ilm);
+      if(ALPHA.includes(x)) x=ALPHA[km.transPerm[ALPHA.indexOf(x)]];
+      unused.forEach((n,i)=>{x=applyLayout(x,n,sS[i],false,lm,ilm);});
+      x=plugFwd(x,unused,lm); x=applySteck(x,steckM);
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)+wstate%N)%N];
+    } else {
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)-wstate%N+N*100)%N];
+      x=applySteck(x,steckM); x=plugInv(x,unused,ilm);
+      for(let i=unused.length-1;i>=0;i--) x=applyLayout(x,unused[i],sS[i],true,lm,ilm);
+      if(ALPHA.includes(x)) x=ALPHA[km.invTransPerm[ALPHA.indexOf(x)]];
+      for(let r=rds-1;r>=0;r--) x=applyLayout(x,stepLayouts[r],stepShifts[r],true,lm,ilm);
+      x=plugInv(x,unused,ilm); x=applySteck(x,steckM);
+    }
+    result+=x;
+    rs=advanceRotors(rs,ci2,km.stepMask);
+    ci2++;
+  }
+  return result;
+}
+
+function _rotorStateHash(rs) {
+  let h=2166136261;
+  for(const r of rs){h^=r.pos*73;h=(Math.imul(h,16777619))>>>0;}
+  return h;
+}
+
+function applySteck(c, sm) { return sm[c] ?? c; }
 
 function computeChecksumPos(keyStr, totalLen) {
   // Derive insertion position from key - not always the end

@@ -5,8 +5,20 @@
   Includes Chromium 146.0.7680.166 and Node.js 24.14.0.
 - **electron-builder updated to v26.8.1** (from v24.13.3).
 - **Windows arm64 build target added** to package.json.
-- **About dialog updated** to reflect current version, 68-symbol alphabet,
+- **About dialog updated** to reflect v2.0.0-rc.3.1, 68-symbol alphabet,
   and correct keyspace (~4.929 x 10^98).
+
+### Security Fix
+- **Checksum now encrypted** using continuation of cipher state after the main
+  message. Previously the checksum was inserted raw at a key-derived position.
+  Now the 4 checksum characters are run through the full cipher pipeline starting
+  from where the main message left off, making them statistically identical to
+  any other 4 characters in the ciphertext.
+
+### UX
+- **Lowercase warning added** - a visible warning appears when lowercase input
+  is detected, noting that lowercase letters are folded to uppercase and
+  case-sensitive content (URLs, passwords) may not decrypt identically.
 
 ---
 
