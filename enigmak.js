@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v2.0.0-rc.4 - JavaScript module
+ * ENIGMAK v2.0.0-rc.3.1 - JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
