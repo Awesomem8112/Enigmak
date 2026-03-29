@@ -51,7 +51,7 @@ Output: `dist/ENIGMAK*.dmg`
 enigmak-electron/
 ├── main.js          - Electron main process (window, menus, file I/O)
 ├── package.json     - build config
-├── README.md        - this file
+├── electron-README.md        - this file
 └── src/
     └── index.html   - the full ENIGMAK machine (unchanged)
 ```
