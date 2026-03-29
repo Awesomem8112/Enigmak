@@ -18,7 +18,7 @@ The Enigma machine worked by passing each character through a series of rotating
 
 ENIGMAK inherits this concept but extends it significantly.
 
-### The 68Symbol Alphabet
+### The 68-Symbol Alphabet
 
 Most classical ciphers operate on 26 letters. ENIGMAK operates on 68 symbols:
 
