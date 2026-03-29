@@ -1360,9 +1360,16 @@ function passphraseToKey(phrase) {
 
 function updatePhraseDisplay() {
   const key = encodeKey();
-  const phrase = keyToPassphrase(key);
   const el = document.getElementById('phrase-val');
-  if (el) el.textContent = phrase || '-';
+  if (!el) return;
+  // April Fools: show "maximum security passphrase" on April 1st
+  const now = new Date();
+  if (now.getMonth() === 3 && now.getDate() === 1) {
+    el.textContent = 'password password password password';
+    return;
+  }
+  const phrase = keyToPassphrase(key);
+  el.textContent = phrase || '-';
 }
 
 function copyPhrase() {

@@ -23,6 +23,7 @@ ENIGMAK is a browser-based cipher machine inspired by the historical Enigma roto
 - **Message authentication** - key-derived checksum embedded at key-derived position
 - **Key fingerprint** - 4-character verbal verification code
 - **Passphrase encoding** - word-based key representation
+- **ASCII only** — supports the 68-symbol ASCII alphabet. Non-ASCII characters (Cyrillic, Chinese, accented Latin, etc.) pass through unencrypted.
 - **Live IoC display** - real-time statistical quality indicator
 - **Decrypt mode warning** - full-screen amber tint
 - **Fully offline** - single HTML file, no dependencies
@@ -44,6 +45,8 @@ See the [GitHub.io](https://awesomem8112.github.io/Enigmak/) site to see how Eni
 ## Desktop App
 
 See the [Electron wrapper](electron/) for a standalone desktop application (Windows, macOS, Linux).
+
+Before building, run `npm audit` inside the `electron/` folder to check for supply chain vulnerabilities. The cipher files (`enigmak.html`, `enigmak.py`, `enigmak.js`) have zero npm dependencies and are safe to use directly with no install step required.
 
 ## Architecture
 
@@ -71,7 +74,7 @@ Space-separated numeric format:
 - `rotors` - 1-digit layout + 2-digit position per rotor
 - `steck` - 4-digit pairs (2+2 char indices), `0` if none
 - `U` - 3-digit base round count (001–999)
-- `nonce` - 2-digit char indices concatenated (optional)
+- `nonce` - 3 characters, each encoded as 2-digit char index (6 digits total, optional)
 
 ## Security Notes
 

@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v2.0.0-rc.3 - JavaScript module
+ * ENIGMAK v2.0.0-rc.4 - JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -322,7 +322,10 @@ function calcIoC(text) {
 function calcKeyStrength(parsedKey) {
   // Calculate theoretical keyspace in bits
   const C = (n, k) => { if (k > n || k < 0) return 0; if (k === 0 || k === n) return 1; let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return Math.round(r); };
-  const layoutCombos = C(10, parsedKey.enabled.size);
+  // P(10, k) ordered permutations -- layout order matters in ENIGMAK
+  const k = parsedKey.enabled.size;
+  let layoutCombos = 1;
+  for (let i = 0; i < k; i++) layoutCombos *= (10 - i);
   const rotorCombos = Math.pow(10 * N, parsedKey.rotors.length);
   let steckCombos = 1;
   let remaining = N;

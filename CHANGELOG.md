@@ -1,3 +1,15 @@
+## v2.0.0-rc.3.1 - Release Candidate 3.1 (not officially released)
+
+### Updates
+- **Electron updated to v41.1.0** (from v28.3.3) - latest stable release.
+  Includes Chromium 146.0.7680.166 and Node.js 24.14.0.
+- **electron-builder updated to v26.8.1** (from v24.13.3).
+- **Windows arm64 build target added** to package.json.
+- **About dialog updated** to reflect current version, 68-symbol alphabet,
+  and correct keyspace (~4.929 x 10^98).
+
+---
+
 ## v2.0.0-rc.3 - Release Candidate 3 (not officially released)
 
 ### Breaking Change
@@ -17,6 +29,16 @@
 - **Command-line key strength calculation** (Python CLI: `enigmak.py keystrength <key>`).
   Calculates theoretical keyspace in bits across layouts, rotors, stecker pairs,
   rounds, and optional nonce. Available in Python, JavaScript, and HTML versions.
+
+### Fixes
+- **calc_key_strength permutation fix** - layout keyspace now correctly uses ordered
+  permutations P(10,k) instead of combinations C(10,k). Layout order matters in ENIGMAK -
+  enabling Colemak then Dvorak produces different ciphertext than Dvorak then Colemak.
+  Previous versions understated key strength for this component.
+- **Supply chain security note added to README** - warns users to run npm audit before
+  building the Electron wrapper.
+- **layout_bias_check.py restored** - file dropped in rc.2.
+- **Python files moved to python/ folder** - `enigmak.py` and `layout_bias_check.py` now live in `python/` for cleaner project structure.
 
 ---
 
