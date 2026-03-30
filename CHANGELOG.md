@@ -15,6 +15,9 @@
   from where the main message left off, making them statistically identical to
   any other 4 characters in the ciphertext.
 
+### Fixes
+- **enigmak.js: keySum missing from computeKeyMaterial return** - caused undefined cascade in encrypted checksum pipeline, breaking checksum verification entirely in the JS module.
+
 ### UX
 - **Lowercase warning added** - a visible warning appears when lowercase input
   is detected, noting that lowercase letters are folded to uppercase and

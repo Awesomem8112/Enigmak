@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v2.0.0-rc.3.1 - JavaScript module
+ * ENIGMAK v2.0.0-rc.4 - JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -107,7 +107,7 @@ function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   });
 
   const whiteningState = (keySum ^ 0xC0FFEE42) >>> 0;
-  return { rounds, stepMask, transPerm, invTransPerm, layoutKeyBase: keySum % N, whiteningState, layoutMaps, invLayoutMaps };
+  return { rounds, stepMask, transPerm, invTransPerm, layoutKeyBase: keySum % N, keySum, whiteningState, layoutMaps, invLayoutMaps };
 }
 
 function keyedLayoutOffset(n, b) { return (LAYOUT_NAMES.indexOf(n)*7 + b) % N; }
@@ -152,7 +152,7 @@ function plugFwd(c, ls, lm) { let x=c; for (const n of ls) x=lm[n]?.[x]??x; retu
 function plugInv(c, ls, ilm) { let x=c; for (let i=ls.length-1;i>=0;i--) x=ilm[ls[i]]?.[x]??x; return x; }
 
 // ── Core process ──────────────────────────────────────────────────────────────
-function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce='', decrypt=false) {
+function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce='', decrypt=false, returnState=false) {
   const km = computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds);
   const rds = km.rounds;
   const smMap = {}; for (const c of ALPHA) smMap[c] = c;
@@ -203,7 +203,61 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
     result += x;
     rs = advanceRotors(rs, ci, km.stepMask); ci++;
   }
+  return returnState ? { result, wstate, rs } : result;
+}
+
+// ── Checksum helpers ──────────────────────────────────────────────────────────
+function _runChecksumCharsJS(chk, wstate, rs, km, steckPairs, rotors, enabledLayouts, enc) {
+  const smMap = {}; for (const c of ALPHA) smMap[c]=c;
+  steckPairs.forEach(([a,b])=>{smMap[a]=b;smMap[b]=a;});
+  const applySteckL = c => smMap[c]??c;
+  const rotorSet = new Set(rotors.map(r=>r.layout));
+  const el = [...enabledLayouts];
+  const unused = el.filter(n=>!rotorSet.has(n));
+  const lm=km.layoutMaps, ilm=km.invLayoutMaps;
+  const rds=km.rounds;
+  let result='', ci2=0;
+  for (const c of chk) {
+    if (!ALPHA.includes(c)){result+=c;continue;}
+    const ss=rotorShift(rs);
+    const rL=[],rS=[];
+    for(let r=0;r<rds;r++){
+      const lay=el[r%el.length];rL.push(lay);
+      const rsH=_rotorStateHashJS(rs);
+      const posOff=(km.keySum*37+ci2*13+rsH)%N;
+      rS.push((ss+r+ci2+posOff+keyedLayoutOffset(lay,km.layoutKeyBase))%N);
+    }
+    const rsH2=_rotorStateHashJS(rs);
+    const posOff2=(km.keySum*37+ci2*13+rsH2)%N;
+    const sS=unused.map((_,i)=>(ss+rds+i+ci2+posOff2+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
+    let x=c;
+    if(enc){
+      x=applySteckL(x);x=plugFwd(x,unused,lm);
+      for(let r=0;r<rds;r++)x=applyLayout(x,rL[r],rS[r],false,lm,ilm);
+      if(ALPHA.includes(x))x=ALPHA[km.transPerm[ALPHA.indexOf(x)]];
+      unused.forEach((n,i)=>{x=applyLayout(x,n,sS[i],false,lm,ilm);});
+      x=plugFwd(x,unused,lm);x=applySteckL(x);
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)+wstate%N)%N];
+    } else {
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)-wstate%N+N*100)%N];
+      x=applySteckL(x);x=plugInv(x,unused,ilm);
+      for(let i=unused.length-1;i>=0;i--)x=applyLayout(x,unused[i],sS[i],true,lm,ilm);
+      if(ALPHA.includes(x))x=ALPHA[km.invTransPerm[ALPHA.indexOf(x)]];
+      for(let r=rds-1;r>=0;r--)x=applyLayout(x,rL[r],rS[r],true,lm,ilm);
+      x=plugInv(x,unused,ilm);x=applySteckL(x);
+    }
+    result+=x;
+    rs=advanceRotors(rs,ci2,km.stepMask);ci2++;
+  }
   return result;
+}
+
+function _rotorStateHashJS(rs) {
+  let h=2166136261;
+  for(const r of rs){h^=r.pos*73;h=(Math.imul(h,16777619))>>>0;}
+  return h;
 }
 
 // ── Checksum ──────────────────────────────────────────────────────────────────
@@ -267,10 +321,12 @@ function encodeKey(enabled, rotors, steckPairs, userRounds, nonce='') {
  */
 function encrypt(plaintext, keyStr) {
   const k = parseKey(keyStr);
-  const cipher = _process(plaintext, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false);
+  const km = computeKeyMaterial(k.steckPairs, k.rotors, k.enabled, k.userRounds);
+  const { result: cipher, wstate, rs } = _process(plaintext, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false, true);
   const chk = computeChecksum(plaintext, k.keyStr);
+  const encChk = _runChecksumCharsJS(chk, wstate, rs, km, k.steckPairs, k.rotors, k.enabled, true);
   const pos = checksumPos(k.keyStr, cipher.length + CHECKSUM_LEN);
-  return cipher.slice(0, pos) + chk + cipher.slice(pos);
+  return cipher.slice(0, pos) + encChk + cipher.slice(pos);
 }
 
 /**
@@ -279,10 +335,15 @@ function encrypt(plaintext, keyStr) {
  */
 function decrypt(ciphertext, keyStr) {
   const k = parseKey(keyStr);
+  const km = computeKeyMaterial(k.steckPairs, k.rotors, k.enabled, k.userRounds);
   const pos = checksumPos(k.keyStr, ciphertext.length);
-  const chk = ciphertext.slice(pos, pos + CHECKSUM_LEN);
+  const encChk = ciphertext.slice(pos, pos + CHECKSUM_LEN);
   const stripped = ciphertext.slice(0, pos) + ciphertext.slice(pos + CHECKSUM_LEN);
+  // Decrypt the message first to get plaintext
   const plaintext = _process(stripped, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, true);
+  // Re-encrypt plaintext to reproduce the original cipher state for checksum decryption
+  const { result: _, wstate, rs } = _process(plaintext, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false, true);
+  const chk = _runChecksumCharsJS(encChk, wstate, rs, km, k.steckPairs, k.rotors, k.enabled, false);
   const expected = computeChecksum(plaintext, k.keyStr);
   return { plaintext, verified: chk === expected };
 }
