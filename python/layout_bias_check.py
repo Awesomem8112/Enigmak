@@ -89,8 +89,8 @@ print(f"  Shared mappings: {shared} (expected by chance: ~{expected_shared:.0f})
 independence = shared < expected_shared * 3
 print(f"  Result: {'PASS' if independence else 'FAIL'}")
 
-# ── Test 5: Old layout bias check (what v2.0.0-rc.3.1 would show) ───────────────────
-print("\n[5] Confirming v2.0.0-rc.3.1 bias is gone - 'E' frequency under old QWERTY wiring")
+# ── Test 5: Old layout bias check (what v2.0.0 would show) ───────────────────
+print("\n[5] Confirming v2.0.0 bias is gone - 'E' frequency under old QWERTY wiring")
 # In old QWERTY, 'E' maps to 'E' (identity for most letter positions)
 # Check if current key-derived map treats all chars equally
 lm_qwerty = km['layout_maps']['QWERTY']

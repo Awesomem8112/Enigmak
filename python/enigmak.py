@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v2.0.0-rc.3.1 - Command-line cipher machine
+ENIGMAK v2.0.0 - Command-line cipher machine
 68-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -481,7 +481,7 @@ def cmd_keystrength(key_str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v2.0.0-rc.3.1 - 68-symbol rotor cipher',
+        description='ENIGMAK v2.0.0 - 68-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
