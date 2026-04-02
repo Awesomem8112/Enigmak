@@ -81,12 +81,12 @@ Space-separated numeric format:
 - Never reuse a key across multiple messages
 - Never transmit a key through the same channel as ciphertext
 - Use the nonce for every message
-- The keyboard layouts serving as rotor wirings are publicly known - all security rests on the key
+- The keyboard layouts serving as rotor wirings are publicly known — all security rests on the key
 - Formal cryptanalytic review has not been completed
 
 ## License
 
-MIT License. Copyright (c) 2026 Erik Lindholm. See [LICENSE](LICENSE) for full terms.
+MIT License - see [LICENSE](LICENSE)
 
 ## Contributing
 

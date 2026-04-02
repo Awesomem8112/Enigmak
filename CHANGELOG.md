@@ -186,7 +186,7 @@
 
 ### Cipher
 - 68-symbol alphabet (A–Z, ;, 0–9, special characters)
-- 1–13 rotors with key-derived irregular stepping (47/68 mask)
+- 1-13 rotors with key-derived irregular stepping (47/68 mask)
 - Steckerbrett: up to 34 symmetric character-pair swaps
 - Dynamic plugboard/scramble from unused keyboard layouts
 - 10 keyboard layouts as substitution tables
