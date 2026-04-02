@@ -1,3 +1,91 @@
+## v2.0.0 - Official Release
+
+### Breaking Change
+- Ciphertexts from v1.0.0 are not compatible with v2.0.0. Keys are unchanged;
+  messages encrypted under v1.0.0 must be re-encrypted.
+
+### Security Fixes (consolidated from rc.1 through rc.3.1)
+
+- **Position whitening layer** (rc.1) - a key-derived LCG stream (seed = keySum XOR
+  0xC0FFEE42, period 2^32) applies a unique offset to every character position.
+  Eliminates the confirmed chosen-plaintext periodicity leak present in v1.0.0,
+  where bucketing ciphertext by position modulo 68 revealed measurable
+  distribution bias (L1 ~0.025 in v1.0.0, now ~0.42+ consistent with random
+  noise). Step mask leakage eliminated as a side effect.
+  Credit: r/cryptography community, March 2026.
+
+- **Key-derived layout permutations** (rc.2) - the ten keyboard layouts (QWERTY,
+  Colemak, Dvorak, etc.) no longer use fixed ergonomic wirings as substitution
+  tables. Each layout now derives a unique bijective permutation of all 68
+  characters from key material (seed = keySum XOR (layoutIndex * 0x9E3779B9 +
+  0xABCD1234)). Eliminates keyboard layout bias: cross-key top-5 character
+  overlap drops to 0/5, consistent with random. All 10 permutations verified
+  bijective by layout_bias_check.py.
+
+- **Rotor state feedback in position offsets** (rc.3) - each character's round and
+  scramble shifts now incorporate an FNV-1a digest of the current rotor state
+  combined with absolute position and key material. Creates a cryptographic
+  feedback loop where rotor state after character N influences offsets for
+  character N+1. Eliminates the monocharacter oracle: encrypting repeated
+  characters no longer produces extractable cycle structure, even under
+  worst-case settings (1 layout, 1 rotor, 0 steck pairs, 1 round).
+
+### New Features
+
+- **Key strength calculator** - theoretical keyspace in bits, broken down by
+  component: layouts (ordered permutations P(10,k)), rotors ((10 * 68)^n),
+  steckerbrett pairs, rounds (999), and optional nonce (68^3). Available in
+  the HTML machine, Python CLI (`enigmak.py keystrength <key>`), and JS module.
+
+- **Dedicated bias checker** (`python/layout_bias_check.py`) - five-test suite
+  verifying layout map bijectivity, frequency uniformity, cross-key
+  independence, inter-layout independence, and elimination of v1.0.0 identity
+  mapping bias. All five tests pass; old v1.0.0 wirings fail three of five.
+
+- **Electron desktop wrapper updated** to v41.1.0 (Chromium 146, Node.js
+  24.14.0) with electron-builder 26.8.1. Windows arm64 build target added.
+  About dialog updated with correct version, 68-symbol alphabet, and keyspace.
+
+### Fixes
+
+- **calc_key_strength permutation formula** - was using C(10,k) unordered
+  combinations; corrected to P(10,k) ordered permutations. Layout order matters
+  in ENIGMAK -- Colemak then Dvorak produces different ciphertext than Dvorak
+  then Colemak. Previous formula understated keyspace by up to 24x for 4
+  layouts.
+
+- **Dvorak layout definition corrected** - top row now correctly maps as
+  `',.PYFGCRL`, home row `AOEUIDHTNS`, bottom row `;QJKXBM`.
+
+- **Python files reorganised** - `enigmak.py` and `layout_bias_check.py` moved
+  to `python/` subfolder for cleaner project structure.
+
+- **Supply chain security note** added to README advising users to run
+  `npm audit` before building the Electron wrapper.
+
+### UX
+
+- **Lowercase input warning** - the HTML machine now shows a visible amber
+  warning when lowercase input is detected, noting that lowercase letters fold
+  to uppercase and case-sensitive content (URLs, passwords) may not decrypt
+  identically.
+
+- **Non-ASCII note** added to README and SECURITY.md: characters outside the
+  68-symbol ASCII alphabet pass through unencrypted. Do not use ENIGMAK to
+  encrypt content containing non-ASCII characters.
+
+### Known Limitations
+- Non-ASCII characters (Cyrillic, accented Latin, emoji, etc.) pass through
+  unencrypted, leaking content. Planned for v3.0.0.
+- Word boundary leakage: spaces are not in the 68-symbol alphabet and appear
+  in plaintext in ciphertext, revealing word lengths. Planned for v3.0.0.
+- Lowercase letters fold to uppercase, breaking case-sensitive content such as
+  URLs and passwords. Planned for v3.0.0.
+- Not formally audited. Do not use for classified, medical, legal, or
+  life-critical communications.
+
+---
+
 ## v2.0.0-rc.3.1 - Release Candidate 3.1 (not officially released)
 
 ### Updates

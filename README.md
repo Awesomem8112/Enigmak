@@ -23,7 +23,7 @@ ENIGMAK is a browser-based cipher machine inspired by the historical Enigma roto
 - **Message authentication** - key-derived checksum embedded at key-derived position
 - **Key fingerprint** - 4-character verbal verification code
 - **Passphrase encoding** - word-based key representation
-- **ASCII only** — supports the 68-symbol ASCII alphabet. Non-ASCII characters (Cyrillic, Chinese, accented Latin, etc.) pass through unencrypted.
+- **ASCII only** - supports the 68-symbol ASCII alphabet. Non-ASCII characters (Cyrillic, Chinese, accented Latin, etc.) pass through unencrypted.
 - **Live IoC display** - real-time statistical quality indicator
 - **Decrypt mode warning** - full-screen amber tint
 - **Fully offline** - single HTML file, no dependencies

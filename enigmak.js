@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v2.0.0-rc.4 - JavaScript module
+ * ENIGMAK v2.0.0-rc.3.1 - JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -152,7 +152,7 @@ function plugFwd(c, ls, lm) { let x=c; for (const n of ls) x=lm[n]?.[x]??x; retu
 function plugInv(c, ls, ilm) { let x=c; for (let i=ls.length-1;i>=0;i--) x=ilm[ls[i]]?.[x]??x; return x; }
 
 // ── Core process ──────────────────────────────────────────────────────────────
-function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce='', decrypt=false, returnState=false) {
+function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce='', decrypt=false) {
   const km = computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds);
   const rds = km.rounds;
   const smMap = {}; for (const c of ALPHA) smMap[c] = c;
@@ -203,7 +203,7 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
     result += x;
     rs = advanceRotors(rs, ci, km.stepMask); ci++;
   }
-  return returnState ? { result, wstate, rs } : result;
+  return result;
 }
 
 // ── Checksum helpers ──────────────────────────────────────────────────────────
@@ -321,12 +321,10 @@ function encodeKey(enabled, rotors, steckPairs, userRounds, nonce='') {
  */
 function encrypt(plaintext, keyStr) {
   const k = parseKey(keyStr);
-  const km = computeKeyMaterial(k.steckPairs, k.rotors, k.enabled, k.userRounds);
-  const { result: cipher, wstate, rs } = _process(plaintext, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false, true);
+  const cipher = _process(plaintext, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false);
   const chk = computeChecksum(plaintext, k.keyStr);
-  const encChk = _runChecksumCharsJS(chk, wstate, rs, km, k.steckPairs, k.rotors, k.enabled, true);
   const pos = checksumPos(k.keyStr, cipher.length + CHECKSUM_LEN);
-  return cipher.slice(0, pos) + encChk + cipher.slice(pos);
+  return cipher.slice(0, pos) + chk + cipher.slice(pos);
 }
 
 /**
@@ -335,15 +333,10 @@ function encrypt(plaintext, keyStr) {
  */
 function decrypt(ciphertext, keyStr) {
   const k = parseKey(keyStr);
-  const km = computeKeyMaterial(k.steckPairs, k.rotors, k.enabled, k.userRounds);
   const pos = checksumPos(k.keyStr, ciphertext.length);
-  const encChk = ciphertext.slice(pos, pos + CHECKSUM_LEN);
+  const chk = ciphertext.slice(pos, pos + CHECKSUM_LEN);
   const stripped = ciphertext.slice(0, pos) + ciphertext.slice(pos + CHECKSUM_LEN);
-  // Decrypt the message first to get plaintext
   const plaintext = _process(stripped, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, true);
-  // Re-encrypt plaintext to reproduce the original cipher state for checksum decryption
-  const { result: _, wstate, rs } = _process(plaintext, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false, true);
-  const chk = _runChecksumCharsJS(encChk, wstate, rs, km, k.steckPairs, k.rotors, k.enabled, false);
   const expected = computeChecksum(plaintext, k.keyStr);
   return { plaintext, verified: chk === expected };
 }

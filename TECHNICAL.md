@@ -18,7 +18,7 @@ The Enigma machine worked by passing each character through a series of rotating
 
 ENIGMAK inherits this concept but extends it significantly.
 
-### The 68-Symbol Alphabet
+### The 68Symbol Alphabet
 
 Most classical ciphers operate on 26 letters. ENIGMAK operates on 68 symbols:
 
@@ -32,7 +32,7 @@ This means digits and special characters are first-class cipher symbols  they go
 
 ENIGMAK uses ten physical keyboard layouts (QWERTY, Colemak, ColemakDH, Dvorak, Workman, Norman, Asset, Halmak, AZERTY, QWERTZ) as the wiring for its substitution layers. Each layout defines a mapping from one set of character positions to another, creating a substitution table.
 
-In v1.0.0, these were fixed  the same wiring regardless of key. In v2.0.0, they are key-derived (more on this below).
+In v1.0.0, these were fixed  the same wiring regardless of key. In v2.0.0-rc.3.1, they are key-derived (more on this below).
 
 ### The Steckerbrett
 
