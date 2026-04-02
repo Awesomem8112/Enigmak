@@ -136,7 +136,7 @@ const menuTemplate = [
           dialog.showMessageBox(mainWindow, {
             type: 'info',
             title: 'About ENIGMAK',
-            message: 'ENIGMAK v2.0.0-rc.3.1',
+            message: 'ENIGMAK v2.0.0',
             detail:
               'Custom rotor cipher machine\n' +
               '68-symbol alphabet · 1-13 rotors · Steckerbrett\n' +
