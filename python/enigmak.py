@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v2.0.0-rc.4 - Command-line cipher machine
+ENIGMAK v2.0.0-rc.3.1 - Command-line cipher machine
 68-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -193,7 +193,7 @@ def plug_inv(c, layouts, inv_layout_maps):
     return c
 
 # ── Core encryption/decryption ────────────────────────────────────────────────
-def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', decrypt=False, return_state=False):
+def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', decrypt=False):
     km = compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds)
     rds = km['rounds']
 
@@ -267,87 +267,11 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
         rs = advance_rotors(rs, ci, km['step_mask'])
         ci += 1
 
-    if return_state:
-        return ''.join(result), wstate, rs
     return ''.join(result)
 
 # ── Checksum ──────────────────────────────────────────────────────────────────
 CHECKSUM_LEN = 4
 
-
-def _encrypt_checksum(chk, wstate, rs, km, steck_pairs, rotors, enabled_layouts, user_rounds):
-    """Encrypt checksum chars using continuation of cipher state after main message."""
-    steck_map = {c: c for c in ALPHA}
-    for a, b in steck_pairs:
-        steck_map[a] = b
-        steck_map[b] = a
-    rotor_set = {r['layout'] for r in rotors}
-    el = list(enabled_layouts)
-    unused = [n for n in el if n not in rotor_set]
-    lm = km['layout_maps']
-    ilm = km['inv_layout_maps']
-    rds = km['rounds']
-    result = []
-    ci_base = 0
-    for c in chk:
-        if c not in ALPHA:
-            result.append(c)
-            continue
-        ss = rotor_shift(rs)
-        step_layouts = [el[r % len(el)] for r in range(rds)]
-        rs_hash = rotor_state_hash(rs)
-        pos_offset = (km['key_sum'] * 37 + ci_base * 13 + rs_hash) % N
-        step_shifts = [(ss + r + ci_base + pos_offset + keyed_layout_offset(step_layouts[r], km['layout_key_base'])) % N for r in range(rds)]
-        scramble_shifts = [(ss + rds + i + ci_base + pos_offset + keyed_layout_offset(unused[i], km['layout_key_base'])) % N for i in range(len(unused))]
-        x = c
-        x = steck_map[x]; x = plug_fwd(x, unused, lm)
-        for r in range(rds): x = apply_layout(x, step_layouts[r], step_shifts[r], False, lm, ilm)
-        if x in ALPHA: x = ALPHA[km['trans_perm'][ALPHA.index(x)]]
-        for i, n in enumerate(unused): x = apply_layout(x, n, scramble_shifts[i], False, lm, ilm)
-        x = plug_fwd(x, unused, lm); x = steck_map[x]
-        wstate = lcg(wstate)
-        x = ALPHA[(ALPHA.index(x) + wstate % N) % N]
-        result.append(x)
-        rs = advance_rotors(rs, ci_base, km['step_mask'])
-        ci_base += 1
-    return ''.join(result)
-
-def _decrypt_checksum(chk_enc, wstate, rs, km, steck_pairs, rotors, enabled_layouts, user_rounds):
-    """Decrypt checksum chars using continuation of cipher state after main message."""
-    steck_map = {c: c for c in ALPHA}
-    for a, b in steck_pairs:
-        steck_map[a] = b
-        steck_map[b] = a
-    rotor_set = {r['layout'] for r in rotors}
-    el = list(enabled_layouts)
-    unused = [n for n in el if n not in rotor_set]
-    lm = km['layout_maps']
-    ilm = km['inv_layout_maps']
-    rds = km['rounds']
-    result = []
-    ci_base = 0
-    for c in chk_enc:
-        if c not in ALPHA:
-            result.append(c)
-            continue
-        ss = rotor_shift(rs)
-        step_layouts = [el[r % len(el)] for r in range(rds)]
-        rs_hash = rotor_state_hash(rs)
-        pos_offset = (km['key_sum'] * 37 + ci_base * 13 + rs_hash) % N
-        step_shifts = [(ss + r + ci_base + pos_offset + keyed_layout_offset(step_layouts[r], km['layout_key_base'])) % N for r in range(rds)]
-        scramble_shifts = [(ss + rds + i + ci_base + pos_offset + keyed_layout_offset(unused[i], km['layout_key_base'])) % N for i in range(len(unused))]
-        x = c
-        wstate = lcg(wstate)
-        x = ALPHA[(ALPHA.index(x) - wstate % N) % N]
-        x = steck_map[x]; x = plug_inv(x, unused, ilm)
-        for i in range(len(unused) - 1, -1, -1): x = apply_layout(x, unused[i], scramble_shifts[i], True, lm, ilm)
-        if x in ALPHA: x = ALPHA[km['inv_trans_perm'][ALPHA.index(x)]]
-        for r in range(rds - 1, -1, -1): x = apply_layout(x, step_layouts[r], step_shifts[r], True, lm, ilm)
-        x = plug_inv(x, unused, ilm); x = steck_map[x]
-        result.append(x)
-        rs = advance_rotors(rs, ci_base, km['step_mask'])
-        ci_base += 1
-    return ''.join(result)
 
 def compute_checksum(plaintext, key_str):
     h1 = hash_str(plaintext + '|' + key_str + '|chk1')
@@ -363,26 +287,15 @@ def checksum_pos(key_str, total_len):
     h = hash_str(key_str + 'chkpos')
     return h % max(1, total_len - CHECKSUM_LEN)
 
-def embed_checksum(ciphertext, plaintext, key_str, cipher_wstate=None, cipher_rs=None, km=None, steck_pairs=None, rotors=None, enabled_layouts=None, user_rounds=None, nonce=''):
+def embed_checksum(ciphertext, plaintext, key_str):
     chk = compute_checksum(plaintext, key_str)
-    # Encrypt checksum chars using continuation of cipher state
-    if cipher_wstate is not None and cipher_rs is not None and km is not None:
-        chk = _encrypt_checksum(chk, cipher_wstate, cipher_rs, km, steck_pairs, rotors, enabled_layouts, user_rounds)
     pos = checksum_pos(key_str, len(ciphertext) + CHECKSUM_LEN)
     return ciphertext[:pos] + chk + ciphertext[pos:]
 
-def strip_checksum(ciphertext, key_str, steck_pairs=None, rotors=None, enabled_layouts=None, user_rounds=None, nonce=''):
+def strip_checksum(ciphertext, key_str):
     pos = checksum_pos(key_str, len(ciphertext))
-    chk_enc = ciphertext[pos:pos + CHECKSUM_LEN]
+    chk = ciphertext[pos:pos + CHECKSUM_LEN]
     stripped = ciphertext[:pos] + ciphertext[pos + CHECKSUM_LEN:]
-    # Decrypt checksum chars if key material provided
-    if steck_pairs is not None:
-        # Get cipher state after processing stripped message
-        _, cipher_wstate, cipher_rs = process(stripped, steck_pairs, rotors, enabled_layouts, user_rounds, nonce, decrypt=False, return_state=True)
-        km = compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds)
-        chk = _decrypt_checksum(chk_enc, cipher_wstate, cipher_rs, km, steck_pairs, rotors, enabled_layouts, user_rounds)
-    else:
-        chk = chk_enc
     return stripped, chk
 
 def verify_checksum(plaintext, extracted_chk, key_str):
@@ -532,20 +445,14 @@ def generate_key(num_rotors=3, num_steck_pairs=8, num_layouts=4):
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def cmd_encrypt(plaintext, key_str):
     k = parse_key(key_str)
-    cipher, wstate, rs = process(plaintext, k['steck_pairs'], k['rotors'],
-                     k['enabled'], k['user_rounds'], k['nonce'], decrypt=False, return_state=True)
-    km = compute_key_material(k['steck_pairs'], k['rotors'], k['enabled'], k['user_rounds'])
-    result = embed_checksum(cipher, plaintext, k['key_str'],
-                           cipher_wstate=wstate, cipher_rs=rs, km=km,
-                           steck_pairs=k['steck_pairs'], rotors=k['rotors'],
-                           enabled_layouts=k['enabled'], user_rounds=k['user_rounds'], nonce=k['nonce'])
+    cipher = process(plaintext, k['steck_pairs'], k['rotors'],
+                     k['enabled'], k['user_rounds'], k['nonce'], decrypt=False)
+    result = embed_checksum(cipher, plaintext, k['key_str'])
     print(result)
 
 def cmd_decrypt(ciphertext, key_str):
     k = parse_key(key_str)
-    stripped, chk = strip_checksum(ciphertext, k['key_str'],
-                                   steck_pairs=k['steck_pairs'], rotors=k['rotors'],
-                                   enabled_layouts=k['enabled'], user_rounds=k['user_rounds'], nonce=k['nonce'])
+    stripped, chk = strip_checksum(ciphertext, k['key_str'])
     plain = process(stripped, k['steck_pairs'], k['rotors'],
                     k['enabled'], k['user_rounds'], k['nonce'], decrypt=True)
     verified = verify_checksum(plain, chk, k['key_str'])
@@ -574,7 +481,7 @@ def cmd_keystrength(key_str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v2.0.0-rc.4 - 68-symbol rotor cipher',
+        description='ENIGMAK v2.0.0-rc.3.1 - 68-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
