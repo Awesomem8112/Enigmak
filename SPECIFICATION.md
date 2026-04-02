@@ -1,4 +1,4 @@
-# ENIGMAK v1.0.0 - Formal Specification
+# ENIGMAK v2.0.0-rc.3 - Formal Specification
 
 ## 1. Overview
 
@@ -174,6 +174,17 @@ After processing character at position ci:
 - If `stepMask[ci mod N]` is false: rotors do not advance
 - Otherwise: rightmost rotor increments; carries propagate left on rollover (odometer)
 
+### 6.4 Position offset with rotor state feedback
+
+To prevent the monocharacter oracle attack (encrypting repeated characters reveals rotor cycle structure), each character's round and scramble shifts include a position-dependent offset derived from the current rotor state:
+
+```
+rsHash = FNV-1a(rotor positions) - digest of current rotor state
+posOffset = (keySum × 37 + ci × 13 + rsHash) mod N
+```
+
+This creates a feedback loop: rotor state after character N influences the offset for character N+1, making repeated plaintext characters produce different rotor query indices across encryption runs.
+
 ---
 
 ## 7. Encryption Pipeline
@@ -183,19 +194,21 @@ For each character c in plaintext:
 1. **Fold case:** if c ∈ {a..z}, replace with c.toUpperCase()
 2. **Passthrough:** if c ∉ Σ, output c unchanged, do not advance rotors
 3. **Compute shift:** ss = combined rotor shift
-4. **Build round parameters:**
-   - For round r ∈ {0..rounds-1}: layout = E[r mod |E|], shift_r = (ss + r + offset(layout)) mod N
-5. **Build scramble parameters:**
+4. **Compute position offset:** posOffset = (keySum × 37 + ci × 13 + rsHash) mod N
+5. **Build round parameters:**
+   - For round r ∈ {0..rounds-1}: layout = E[r mod |E|], shift_r = (ss + r + ci + posOffset + offset(layout)) mod N
+6. **Build scramble parameters:**
    - unusedLayouts = E \ {layouts assigned to rotors}
-   - For i ∈ {0..|unused|-1}: scramble_shift_i = (ss + rounds + i + offset(unused[i])) mod N
-6. **Apply steckerbrett in:** c ← σ(c)
-7. **Apply plugboard forward:** c ← sub_{unused[0]}(sub_{unused[1]}(...(c)...))
-8. **Apply rotor rounds:** for r = 0 to rounds-1: c ← Σ[(Σ.index(sub_{layout_r}(c)) + shift_r) mod N]
-9. **Apply diffusion:** c ← Σ[π[Σ.index(c)]]
-10. **Apply scramble:** for i = 0 to |unused|-1: c ← Σ[(Σ.index(sub_{unused[i]}(c)) + scramble_shift_i) mod N]
-11. **Apply plugboard inverse:** reverse of step 7
-12. **Apply steckerbrett out:** c ← σ(c) (same map, symmetric)
-13. **Advance rotors**
+   - For i ∈ {0..|unused|-1}: scramble_shift_i = (ss + rounds + i + ci + posOffset + offset(unused[i])) mod N
+7. **Apply steckerbrett in:** c ← σ(c)
+8. **Apply plugboard forward:** c ← sub_{unused[0]}(sub_{unused[1]}(...(c)...))
+9. **Apply rotor rounds:** for r = 0 to rounds-1: c ← Σ[(Σ.index(sub_{layout_r}(c)) + shift_r) mod N]
+10. **Apply diffusion:** c ← Σ[π[Σ.index(c)]]
+11. **Apply scramble:** for i = 0 to |unused|-1: c ← Σ[(Σ.index(sub_{unused[i]}(c)) + scramble_shift_i) mod N]
+12. **Apply plugboard inverse:** reverse of step 8
+13. **Apply steckerbrett out:** c ← σ(c) (same map, symmetric)
+14. **Position whitening:** c ← Σ[(Σ.index(c) + (lcg_state mod N)) mod N]
+15. **Advance rotors**
 
 ---
 

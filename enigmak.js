@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v1.0.0 - JavaScript module
+ * ENIGMAK v2.0.0 - JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -26,7 +26,7 @@ const LAYOUT_DEFS = {
   'QWERTY':    {top:'QWERTYUIOP', home:'ASDFGHJKL;', bot:'ZXCVBNM'},
   'Colemak':   {top:'QWFPGJLUY;', home:'ARSTDHNEIO', bot:'ZXCVBKM'},
   'Colemak-DH':{top:'QWFPBJLUY;', home:'ARSTGMNEIO', bot:'ZXCDVKH'},
-  'Dvorak':    {top:';VZPYFGCRL', home:'AOEUIDHTNS', bot:'QJKXBMWVZ'},
+  'Dvorak':    {top:"',.PYFGCRL", home:'AOEUIDHTNS', bot:';QJKXBM'},
   'Workman':   {top:'QDRWBJFUP;', home:'ASHTGYNEOI', bot:'ZXMCVKL'},
   'Norman':    {top:'QWDFKJURL;', home:'ASETGYNIOH', bot:'ZXCVBPM'},
   'Asset':     {top:'QWJFGYPUL;', home:'ASETDHNIOR', bot:'ZXCVBKM'},
@@ -63,6 +63,15 @@ function hashStr(s) {
 
 function lcg(v) { return (Math.imul(v, 1664525) + 1013904223) >>> 0; }
 
+function rotorStateHash(rotors) {
+  let h = 2166136261;
+  for (const r of rotors) {
+    h ^= r.pos * 73;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
+
 // ── Key material derivation ───────────────────────────────────────────────────
 function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   const S = steckPairs.reduce((a,[x,y]) => {
@@ -86,7 +95,19 @@ function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   const invTransPerm = new Array(N);
   transPerm.forEach((x,i) => invTransPerm[x] = i);
 
-  return { rounds, stepMask, transPerm, invTransPerm, layoutKeyBase: keySum % N };
+  // Key-derived layout permutations -- replaces fixed keyboard layout wirings
+  const layoutMaps = {}, invLayoutMaps = {};
+  LAYOUT_NAMES.forEach((name, li) => {
+    const perm = [...Array(N).keys()];
+    let v2 = ((keySum ^ (li * 0x9E3779B9 + 0xABCD1234)) >>> 0);
+    for (let i=N-1;i>0;i--) { v2=((v2*1664525)+1013904223)>>>0; const j=v2%(i+1); [perm[i],perm[j]]=[perm[j],perm[i]]; }
+    const fwd={}, inv={};
+    for (let i=0;i<N;i++) { fwd[ALPHA[i]]=ALPHA[perm[i]]; inv[ALPHA[perm[i]]]=ALPHA[i]; }
+    layoutMaps[name]=fwd; invLayoutMaps[name]=inv;
+  });
+
+  const whiteningState = (keySum ^ 0xC0FFEE42) >>> 0;
+  return { rounds, stepMask, transPerm, invTransPerm, layoutKeyBase: keySum % N, keySum, whiteningState, layoutMaps, invLayoutMaps };
 }
 
 function keyedLayoutOffset(n, b) { return (LAYOUT_NAMES.indexOf(n)*7 + b) % N; }
@@ -114,21 +135,21 @@ function applyNonce(rotors, nonce) {
   });
 }
 
-function applyLayout(c, n, s, inv) {
+function applyLayout(c, n, s, inv, lm, ilm) {
   if (!inv) {
-    let x = MAPS[n]?.[c] ?? c;
+    let x = lm[n]?.[c] ?? c;
     if (ALPHA.includes(x)) x = ALPHA[(ALPHA.indexOf(x)+s) % N];
     return x;
   } else {
     let x = c;
     if (ALPHA.includes(x)) x = ALPHA[(ALPHA.indexOf(x)-s+N*100) % N];
-    x = INV_MAPS[n]?.[x] ?? x;
+    x = ilm[n]?.[x] ?? x;
     return x;
   }
 }
 
-function plugFwd(c, ls) { let x=c; for (const n of ls) x=MAPS[n]?.[x]??x; return x; }
-function plugInv(c, ls) { let x=c; for (let i=ls.length-1;i>=0;i--) x=INV_MAPS[ls[i]]?.[x]??x; return x; }
+function plugFwd(c, ls, lm) { let x=c; for (const n of ls) x=lm[n]?.[x]??x; return x; }
+function plugInv(c, ls, ilm) { let x=c; for (let i=ls.length-1;i>=0;i--) x=ilm[ls[i]]?.[x]??x; return x; }
 
 // ── Core process ──────────────────────────────────────────────────────────────
 function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce='', decrypt=false) {
@@ -141,6 +162,9 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
   const el = [...enabledLayouts];
   const unused = el.filter(n => !rotorSet.has(n));
   let rs = applyNonce(rotors.map(r => ({...r})), nonce);
+  // Position whitening: LCG stream, period 2^32 -- breaks mod-N periodicity
+  let wstate = km.whiteningState;
+  const lm = km.layoutMaps, ilm = km.invLayoutMaps;
   let result = '', ci = 0;
 
   for (const c of text) {
@@ -148,29 +172,92 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
     if (!ALPHA.includes(ch)) { result += c; continue; }
     const ss = rotorShift(rs);
     const rL = [], rS = [];
+    // Position offset: rotor state feedback breaks monocharacter oracle
+    const rsHash = rotorStateHash(rs);
+    const posOffset = ((km.layoutKeyBase * 37 + ci * 13 + rsHash) >>> 0) % N;
     for (let r=0;r<rds;r++) {
       const lay = el[r % el.length]; rL.push(lay);
-      rS.push((ss + r + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
+      rS.push((ss + r + ci + posOffset + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
     }
-    const sS = unused.map((_,i) => (ss+rds+i+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
+    const sS = unused.map((_,i) => (ss+rds+i+ci+posOffset+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
     let x = ch;
     if (!decrypt) {
-      x=applySteck(x); x=plugFwd(x,unused);
-      for (let r=0;r<rds;r++) x=applyLayout(x,rL[r],rS[r],false);
+      x=applySteck(x); x=plugFwd(x,unused,lm);
+      for (let r=0;r<rds;r++) x=applyLayout(x,rL[r],rS[r],false,lm,ilm);
       if (ALPHA.includes(x)) x=ALPHA[km.transPerm[ALPHA.indexOf(x)]];
-      unused.forEach((n,i) => { x=applyLayout(x,n,sS[i],false); });
-      x=plugFwd(x,unused); x=applySteck(x);
+      unused.forEach((n,i) => { x=applyLayout(x,n,sS[i],false,lm,ilm); });
+      x=plugFwd(x,unused,lm); x=applySteck(x);
+      // Position whitening (encrypt: add LCG offset)
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      if(ALPHA.includes(x)) x=ALPHA[(ALPHA.indexOf(x)+wstate%N)%N];
     } else {
-      x=applySteck(x); x=plugInv(x,unused);
-      for (let i=unused.length-1;i>=0;i--) x=applyLayout(x,unused[i],sS[i],true);
+      // Position whitening (decrypt: subtract LCG offset first)
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      if(ALPHA.includes(x)) x=ALPHA[(ALPHA.indexOf(x)-wstate%N+N*100)%N];
+      x=applySteck(x); x=plugInv(x,unused,ilm);
+      for (let i=unused.length-1;i>=0;i--) x=applyLayout(x,unused[i],sS[i],true,lm,ilm);
       if (ALPHA.includes(x)) x=ALPHA[km.invTransPerm[ALPHA.indexOf(x)]];
-      for (let r=rds-1;r>=0;r--) x=applyLayout(x,rL[r],rS[r],true);
-      x=plugInv(x,unused); x=applySteck(x);
+      for (let r=rds-1;r>=0;r--) x=applyLayout(x,rL[r],rS[r],true,lm,ilm);
+      x=plugInv(x,unused,ilm); x=applySteck(x);
     }
     result += x;
     rs = advanceRotors(rs, ci, km.stepMask); ci++;
   }
   return result;
+}
+
+// ── Checksum helpers ──────────────────────────────────────────────────────────
+function _runChecksumCharsJS(chk, wstate, rs, km, steckPairs, rotors, enabledLayouts, enc) {
+  const smMap = {}; for (const c of ALPHA) smMap[c]=c;
+  steckPairs.forEach(([a,b])=>{smMap[a]=b;smMap[b]=a;});
+  const applySteckL = c => smMap[c]??c;
+  const rotorSet = new Set(rotors.map(r=>r.layout));
+  const el = [...enabledLayouts];
+  const unused = el.filter(n=>!rotorSet.has(n));
+  const lm=km.layoutMaps, ilm=km.invLayoutMaps;
+  const rds=km.rounds;
+  let result='', ci2=0;
+  for (const c of chk) {
+    if (!ALPHA.includes(c)){result+=c;continue;}
+    const ss=rotorShift(rs);
+    const rL=[],rS=[];
+    for(let r=0;r<rds;r++){
+      const lay=el[r%el.length];rL.push(lay);
+      const rsH=_rotorStateHashJS(rs);
+      const posOff=(km.keySum*37+ci2*13+rsH)%N;
+      rS.push((ss+r+ci2+posOff+keyedLayoutOffset(lay,km.layoutKeyBase))%N);
+    }
+    const rsH2=_rotorStateHashJS(rs);
+    const posOff2=(km.keySum*37+ci2*13+rsH2)%N;
+    const sS=unused.map((_,i)=>(ss+rds+i+ci2+posOff2+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
+    let x=c;
+    if(enc){
+      x=applySteckL(x);x=plugFwd(x,unused,lm);
+      for(let r=0;r<rds;r++)x=applyLayout(x,rL[r],rS[r],false,lm,ilm);
+      if(ALPHA.includes(x))x=ALPHA[km.transPerm[ALPHA.indexOf(x)]];
+      unused.forEach((n,i)=>{x=applyLayout(x,n,sS[i],false,lm,ilm);});
+      x=plugFwd(x,unused,lm);x=applySteckL(x);
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)+wstate%N)%N];
+    } else {
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)-wstate%N+N*100)%N];
+      x=applySteckL(x);x=plugInv(x,unused,ilm);
+      for(let i=unused.length-1;i>=0;i--)x=applyLayout(x,unused[i],sS[i],true,lm,ilm);
+      if(ALPHA.includes(x))x=ALPHA[km.invTransPerm[ALPHA.indexOf(x)]];
+      for(let r=rds-1;r>=0;r--)x=applyLayout(x,rL[r],rS[r],true,lm,ilm);
+      x=plugInv(x,unused,ilm);x=applySteckL(x);
+    }
+    result+=x;
+    rs=advanceRotors(rs,ci2,km.stepMask);ci2++;
+  }
+  return result;
+}
+
+function _rotorStateHashJS(rs) {
+  let h=2166136261;
+  for(const r of rs){h^=r.pos*73;h=(Math.imul(h,16777619))>>>0;}
+  return h;
 }
 
 // ── Checksum ──────────────────────────────────────────────────────────────────
@@ -286,9 +373,33 @@ function calcIoC(text) {
   return num/(L*(L-1));
 }
 
+function calcKeyStrength(parsedKey) {
+  // Calculate theoretical keyspace in bits
+  const C = (n, k) => { if (k > n || k < 0) return 0; if (k === 0 || k === n) return 1; let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return Math.round(r); };
+  // P(10, k) ordered permutations -- layout order matters in ENIGMAK
+  const k = parsedKey.enabled.size;
+  let layoutCombos = 1;
+  for (let i = 0; i < k; i++) layoutCombos *= (10 - i);
+  const rotorCombos = Math.pow(10 * N, parsedKey.rotors.length);
+  let steckCombos = 1;
+  let remaining = N;
+  for (let i = 0; i < parsedKey.steckPairs.length; i++) {
+    steckCombos *= C(remaining, 2);
+    remaining -= 2;
+  }
+  if (parsedKey.steckPairs.length > 0) steckCombos = Math.round(steckCombos / factorial(parsedKey.steckPairs.length));
+  const roundCombos = 999;
+  const nonceCombos = parsedKey.nonce ? Math.pow(N, 3) : 1;
+  const total = layoutCombos * rotorCombos * steckCombos * roundCombos * nonceCombos;
+  const bits = Math.log2(total);
+  return { bits, total };
+}
+
+function factorial(n) { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; }
+
 // Export
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { encrypt, decrypt, generateKey, calcIoC, parseKey, encodeKey, ALPHA, N };
+  module.exports = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, ALPHA, N };
 } else if (typeof window !== 'undefined') {
-  window.ENIGMAK = { encrypt, decrypt, generateKey, calcIoC, parseKey, encodeKey, ALPHA, N };
+  window.ENIGMAK = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, ALPHA, N };
 }

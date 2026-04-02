@@ -304,7 +304,10 @@ function secureRandInt(max) {
   <div class="io">
     <div class="io-panel">
       <div class="io-label" id="lbl-in">Plaintext</div>
-      <textarea id="input" placeholder="Type your message..." oninput="onInput()"></textarea>
+      <div id="case-warning" style="display:none;font-size:0.65rem;color:var(--amber);margin-bottom:4px;padding:4px 8px;border:1px solid var(--amber);border-radius:3px;">
+  ⚠ Lowercase letters are folded to uppercase. Case-sensitive content (e.g. URLs, passwords) will not decrypt identically.
+</div>
+<textarea id="input" placeholder="Type your message..." oninput="onInput()"></textarea>
     </div>
     <div class="io-panel">
       <div class="io-label" id="lbl-out">Ciphertext</div>
@@ -392,7 +395,7 @@ const LAYOUT_DEFS = {
   'QWERTY':      { top:'QWERTYUIOP', home:'ASDFGHJKL;', bot:'ZXCVBNM' },
   'Colemak':     { top:'QWFPGJLUY;', home:'ARSTDHNEIO', bot:'ZXCVBKM' },
   'Colemak-DH':  { top:'QWFPBJLUY;', home:'ARSTGMNEIO', bot:'ZXCDVKH' },
-  'Dvorak':      { top:';VZPYFGCRL', home:'AOEUIDHTNS', bot:'QJKXBMWVZ' },
+  'Dvorak':      { top:"',.PYFGCRL", home:'AOEUIDHTNS', bot:';QJKXBM' },
   'Workman':     { top:'QDRWBJFUP;', home:'ASHTGYNEOI', bot:'ZXMCVKL' },
   'Norman':      { top:'QWDFKJURL;', home:'ASETGYNIOH', bot:'ZXCVBPM' },
   'Asset':       { top:'QWJFGYPUL;', home:'ASETDHNIOR', bot:'ZXCVBKM' },
@@ -441,14 +444,14 @@ function computeKeyMaterial() {
   const rounds = ((S + R + L + userRounds) % 999) + 1;
   const keySum = ((S * 31 + R * 17 + L * 13) >>> 0);
 
-  // Upgrade 1: irregular step mask (19/27 positions advance rotors)
+  // Irregular step mask: 47/68 positions advance rotors
   const stepPos = [...Array(N).keys()];
   let v = (keySum ^ 0x5A5A5A5A) >>> 0;
   for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[stepPos[i],stepPos[j]]=[stepPos[j],stepPos[i]];}
   const stepMask = new Array(N).fill(false);
   stepPos.slice(0,47).forEach(p=>stepMask[p]=true); // 47/68 ≈ 70%
 
-  // Upgrade 2: diffusion - keyed 27-position transposition
+  // Diffusion layer: keyed 68-position transposition
   const transPerm = [...Array(N).keys()];
   v = (keySum ^ 0xDEAD1234) >>> 0;
   for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[transPerm[i],transPerm[j]]=[transPerm[j],transPerm[i]];}
@@ -458,7 +461,22 @@ function computeKeyMaterial() {
   // Upgrade 3: keyed layout base offset
   const layoutKeyBase = keySum % N;
 
-  return {rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase};
+  // Key-derived layout permutations -- replaces fixed keyboard layout wirings
+  // Each layout gets a unique bijective permutation seeded from key material
+  const layoutMaps = {}, invLayoutMaps = {};
+  LAYOUT_NAMES.forEach((name, li) => {
+    const perm = [...Array(N).keys()];
+    let v2 = ((keySum ^ (li * 0x9E3779B9 + 0xABCD1234)) >>> 0);
+    for (let i=N-1;i>0;i--) { v2=((v2*1664525)+1013904223)>>>0; const j=v2%(i+1); [perm[i],perm[j]]=[perm[j],perm[i]]; }
+    const fwd = {}, inv = {};
+    for (let i=0;i<N;i++) { fwd[ALPHA[i]]=ALPHA[perm[i]]; inv[ALPHA[perm[i]]]=ALPHA[i]; }
+    layoutMaps[name]=fwd; invLayoutMaps[name]=inv;
+  });
+
+  // Position whitening seed: separate LCG stream seed to break mod-N periodicity
+  const whiteningState = (keySum ^ 0xC0FFEE42) >>> 0;
+
+  return {rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase, whiteningState, layoutMaps, invLayoutMaps};
 }
 
 function keyedLayoutOffset(layoutName, layoutKeyBase) {
@@ -492,15 +510,15 @@ function applyNonce(baseRotors, nonceStr) {
   });
 }
 
-function applyLayout(char, layoutName, shift, invert) {
+function applyLayout(char, layoutName, shift, invert, lm, ilm) {
   if (!invert) {
-    let c = MAPS[layoutName][char] ?? char;
+    let c = lm[layoutName][char] ?? char;
     if (ALPHA.includes(c)) c = ALPHA[(ALPHA.indexOf(c) + shift) % N];
     return c;
   } else {
     let c = char;
     if (ALPHA.includes(c)) c = ALPHA[(ALPHA.indexOf(c) - shift + N*100) % N];
-    c = INV_MAPS[layoutName][c] ?? c;
+    c = ilm[layoutName][c] ?? c;
     return c;
   }
 }
@@ -576,8 +594,17 @@ function onSteckClick(c) {
 }
 
 // Plugboard: pure layout substitution, no shift
-function plugFwd(char, layouts) { let c=char; for(const n of layouts) c=MAPS[n][c]??c; return c; }
-function plugInv(char, layouts) { let c=char; for(let i=layouts.length-1;i>=0;i--) c=INV_MAPS[layouts[i]][c]??c; return c; }
+function plugFwd(char, layouts, lm) { let c=char; for(const n of layouts) c=lm[n][c]??c; return c; }
+function plugInv(char, layouts, ilm) { let c=char; for(let i=layouts.length-1;i>=0;i--) c=ilm[layouts[i]][c]??c; return c; }
+
+function rotorStateHash(rotors) {
+  let h = 2166136261;
+  for (const r of rotors) {
+    h ^= r.pos * 73;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
 
 function processAll(str, startRotors, _unused_rds, dec) {
   const km = computeKeyMaterial();
@@ -590,6 +617,8 @@ function processAll(str, startRotors, _unused_rds, dec) {
   const chars = [];
   let result = '';
   let charIndex = 0;
+  // Position whitening: LCG stream per character, period 2^32 -- breaks mod-N periodicity
+  let wstate = km.whiteningState;
 
   for (const c of str) {
     // 68-char alphabet: fold lowercase a-z to uppercase before processing
@@ -601,37 +630,51 @@ function processAll(str, startRotors, _unused_rds, dec) {
 
     const startShift = rotorShift(rs);
     const stepLayouts = [], stepShifts = [];
+    // Position offset: rotor state feedback breaks monocharacter oracle
+    const rsHash = rotorStateHash(rs);
+    const posOffset = ((km.layoutKeyBase * 37 + charIndex * 13 + rsHash) >>> 0) % N;
     for (let r=0; r<rds; r++) {
       const lay = enabledList[r % enabledList.length];
       stepLayouts.push(lay);
-      stepShifts.push((startShift + r + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
+      stepShifts.push((startShift + r + charIndex + posOffset + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
     }
     const scrambleShifts = unusedLayouts.map((_,i) =>
-      (startShift + rds + i + keyedLayoutOffset(unusedLayouts[i], km.layoutKeyBase)) % N);
+      (startShift + rds + i + charIndex + posOffset + keyedLayoutOffset(unusedLayouts[i], km.layoutKeyBase)) % N);
     const steps = [upper];
 
     const sm = steckMap();
+    const lm = km.layoutMaps, ilm = km.invLayoutMaps;
     if (!dec) {
       steps.push(applySteck(steps[steps.length-1], sm));
-      steps.push(plugFwd(steps[steps.length-1], unusedLayouts));
-      for (let r=0; r<rds; r++) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], false));
+      steps.push(plugFwd(steps[steps.length-1], unusedLayouts, lm));
+      for (let r=0; r<rds; r++) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], false, lm, ilm));
       // Upgrade 2: diffusion transposition
       let xd = steps[steps.length-1];
       if (ALPHA.includes(xd)) xd = ALPHA[km.transPerm[ALPHA.indexOf(xd)]];
       steps.push(xd);
-      unusedLayouts.forEach((n,i) => steps.push(applyLayout(steps[steps.length-1], n, scrambleShifts[i], false)));
-      steps.push(plugFwd(steps[steps.length-1], unusedLayouts));
+      unusedLayouts.forEach((n,i) => steps.push(applyLayout(steps[steps.length-1], n, scrambleShifts[i], false, lm, ilm)));
+      steps.push(plugFwd(steps[steps.length-1], unusedLayouts, lm));
       steps.push(applySteck(steps[steps.length-1], sm));
+      // Position whitening: add key+position LCG offset -- breaks mod-N periodicity
+      wstate = ((wstate * 1664525) + 1013904223) >>> 0;
+      let xw = steps[steps.length-1];
+      if (ALPHA.includes(xw)) xw = ALPHA[(ALPHA.indexOf(xw) + wstate % N) % N];
+      steps.push(xw);
     } else {
+      // Position whitening (decrypt: subtract same LCG offset first)
+      wstate = ((wstate * 1664525) + 1013904223) >>> 0;
+      let xw = steps[steps.length-1];
+      if (ALPHA.includes(xw)) xw = ALPHA[(ALPHA.indexOf(xw) - wstate % N + N * 100) % N];
+      steps.push(xw);
       steps.push(applySteck(steps[steps.length-1], sm));
-      steps.push(plugInv(steps[steps.length-1], unusedLayouts));
-      for (let i=unusedLayouts.length-1; i>=0; i--) steps.push(applyLayout(steps[steps.length-1], unusedLayouts[i], scrambleShifts[i], true));
+      steps.push(plugInv(steps[steps.length-1], unusedLayouts, ilm));
+      for (let i=unusedLayouts.length-1; i>=0; i--) steps.push(applyLayout(steps[steps.length-1], unusedLayouts[i], scrambleShifts[i], true, lm, ilm));
       // Inverse diffusion
       let xd = steps[steps.length-1];
       if (ALPHA.includes(xd)) xd = ALPHA[km.invTransPerm[ALPHA.indexOf(xd)]];
       steps.push(xd);
-      for (let r=rds-1; r>=0; r--) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], true));
-      steps.push(plugInv(steps[steps.length-1], unusedLayouts));
+      for (let r=rds-1; r>=0; r--) steps.push(applyLayout(steps[steps.length-1], stepLayouts[r], stepShifts[r], true, lm, ilm));
+      steps.push(plugInv(steps[steps.length-1], unusedLayouts, ilm));
       steps.push(applySteck(steps[steps.length-1], sm));
     }
 
@@ -735,9 +778,8 @@ function addRotor() {
 function recompute() {
   let input = document.getElementById('input').value;
   if (rotors.length === 0) return;
-  // Compute keyStr once - used consistently for checksum operations
   const keyStr = encodeKey();
-  // In decrypt mode, extract checksum from key-derived position before processing
+  // In decrypt mode, strip checksum from key-derived position before processing
   let incomingChecksum = '';
   if (mode === 'dec' && input.length > CHECKSUM_LEN) {
     const insertPos = computeChecksumPos(keyStr, input.length);
@@ -775,7 +817,14 @@ function recompute() {
   if (visActiveIdx >= 0) renderVisCard(visActiveIdx);
 }
 
-function onInput() { recompute(); }
+function onInput() { recompute(); updateCaseWarning(); }
+
+function updateCaseWarning() {
+  const input = document.getElementById('input').value;
+  const hasLower = /[a-z]/.test(input);
+  const warnEl = document.getElementById('case-warning');
+  if (warnEl) warnEl.style.display = hasLower ? 'block' : 'none';
+}
 function onUserRounds() {
   userRounds = parseInt(document.getElementById('rounds-slider').value);
   document.getElementById('rounds-slider-val').textContent = userRounds;
@@ -1240,6 +1289,66 @@ function computeFingerprint() {
 // ── Message authentication checksum ──────────────────────────────────────────
 const CHECKSUM_LEN = 4; // characters appended to ciphertext
 
+// ── Encrypted checksum helpers (reserved for v3.0.0) ────────────────────────────
+// These functions run checksum characters through the full cipher pipeline,
+// making the checksum statistically indistinguishable from regular ciphertext.
+// Currently unused -- wired for v3.0.0 encrypted checksum feature.
+function _runChecksumChars(chars, wstate, rs, km, enc) {
+  // Run checksum chars through the cipher pipeline (encrypt or decrypt)
+  const steckM = steckMap();
+  const rotorSet = new Set(rotors.map(r => r.layout));
+  const el = [...enabledLayouts];
+  const unused = el.filter(n => !rotorSet.has(n));
+  const lm = km.layoutMaps, ilm = km.invLayoutMaps;
+  const rds = km.rounds;
+  let result = '';
+  let ci2 = 0;
+  for (const c of chars) {
+    if (!ALPHA.includes(c)) { result += c; continue; }
+    const ss = rotorShift(rs);
+    const stepLayouts = [], stepShifts = [];
+    for (let r=0;r<rds;r++) {
+      const lay=el[r%el.length]; stepLayouts.push(lay);
+      const rsH=_rotorStateHash(rs);
+      const posOff=(km.keySum*37+ci2*13+rsH)%N;
+      stepShifts.push((ss+r+ci2+posOff+keyedLayoutOffset(lay,km.layoutKeyBase))%N);
+    }
+    const rsH2=_rotorStateHash(rs);
+    const posOff2=(km.keySum*37+ci2*13+rsH2)%N;
+    const sS=unused.map((_,i)=>(ss+rds+i+ci2+posOff2+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
+    let x=c;
+    if (enc) {
+      x=applySteck(x,steckM); x=plugFwd(x,unused,lm);
+      for(let r=0;r<rds;r++) x=applyLayout(x,stepLayouts[r],stepShifts[r],false,lm,ilm);
+      if(ALPHA.includes(x)) x=ALPHA[km.transPerm[ALPHA.indexOf(x)]];
+      unused.forEach((n,i)=>{x=applyLayout(x,n,sS[i],false,lm,ilm);});
+      x=plugFwd(x,unused,lm); x=applySteck(x,steckM);
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)+wstate%N)%N];
+    } else {
+      wstate=((wstate*1664525)+1013904223)>>>0;
+      x=ALPHA[(ALPHA.indexOf(x)-wstate%N+N*100)%N];
+      x=applySteck(x,steckM); x=plugInv(x,unused,ilm);
+      for(let i=unused.length-1;i>=0;i--) x=applyLayout(x,unused[i],sS[i],true,lm,ilm);
+      if(ALPHA.includes(x)) x=ALPHA[km.invTransPerm[ALPHA.indexOf(x)]];
+      for(let r=rds-1;r>=0;r--) x=applyLayout(x,stepLayouts[r],stepShifts[r],true,lm,ilm);
+      x=plugInv(x,unused,ilm); x=applySteck(x,steckM);
+    }
+    result+=x;
+    rs=advanceRotors(rs,ci2,km.stepMask);
+    ci2++;
+  }
+  return result;
+}
+
+function _rotorStateHash(rs) {
+  let h=2166136261;
+  for(const r of rs){h^=r.pos*73;h=(Math.imul(h,16777619))>>>0;}
+  return h;
+}
+
+function applySteck(c, sm) { return sm[c] ?? c; }
+
 function computeChecksumPos(keyStr, totalLen) {
   // Derive insertion position from key - not always the end
   const h = hashStr(keyStr + 'chkpos');
@@ -1320,9 +1429,16 @@ function passphraseToKey(phrase) {
 
 function updatePhraseDisplay() {
   const key = encodeKey();
-  const phrase = keyToPassphrase(key);
   const el = document.getElementById('phrase-val');
-  if (el) el.textContent = phrase || '-';
+  if (!el) return;
+  // April Fools: show "maximum security passphrase" on April 1st
+  const now = new Date();
+  if (now.getMonth() === 3 && now.getDate() === 1) {
+    el.textContent = 'password password password password';
+    return;
+  }
+  const phrase = keyToPassphrase(key);
+  el.textContent = phrase || '-';
 }
 
 function copyPhrase() {

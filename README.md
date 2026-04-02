@@ -46,6 +46,8 @@ See the [GitHub.io](https://awesomem8112.github.io/Enigmak/) site to see how Eni
 
 See the [Electron wrapper](electron/) for a standalone desktop application (Windows, macOS, Linux).
 
+Before building, run `npm audit` inside the `electron/` folder to check for supply chain vulnerabilities. The cipher files (`enigmak.html`, `enigmak.py`, `enigmak.js`) have zero npm dependencies and are safe to use directly with no install step required.
+
 ## Architecture
 
 ```
@@ -72,7 +74,7 @@ Space-separated numeric format:
 - `rotors` - 1-digit layout + 2-digit position per rotor
 - `steck` - 4-digit pairs (2+2 char indices), `0` if none
 - `U` - 3-digit base round count (001–999)
-- `nonce` - 2-digit char indices concatenated (optional)
+- `nonce` - 3 characters, each encoded as 2-digit char index (6 digits total, optional)
 
 ## Security Notes
 

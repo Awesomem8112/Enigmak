@@ -136,13 +136,13 @@ const menuTemplate = [
           dialog.showMessageBox(mainWindow, {
             type: 'info',
             title: 'About ENIGMAK',
-            message: 'ENIGMAK v1.0',
+            message: 'ENIGMAK v2.0.0',
             detail:
               'Custom rotor cipher machine\n' +
-              '27-symbol alphabet · 1-16 rotors · Steckerbrett\n' +
-              'Irregular stepping · diffusion · keyed layouts\n' +
-              '1-999 key-derived rounds\n\n' +
-              'Keyspace: ~2.38 × 10⁶⁴\n' +
+              '68-symbol alphabet · 1-13 rotors · Steckerbrett\n' +
+              'Irregular stepping · diffusion · key-derived layouts\n' +
+              '1-999 key-derived rounds · position whitening\n\n' +
+              'Keyspace: ~4.929 x 10^98\n' +
               'Runs fully offline - no network requests.',
           });
         },
