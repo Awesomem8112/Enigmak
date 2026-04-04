@@ -1,3 +1,27 @@
+## v3.0.0-rc.1 - Release Candidate 1 (not officially released)
+
+### Breaking Change
+- Ciphertexts from v2.0.0 and earlier are not compatible with v3.0.0.
+  The alphabet has been expanded from 68 to 94 symbols. All existing
+  messages must be re-encrypted.
+
+### New Features
+- **Lowercase letters added to alphabet** - a-z are now first-class cipher
+  symbols. N increases from 68 to 94. Lowercase and uppercase are fully
+  distinct: "hello" and "HELLO" produce different ciphertext.
+- **Case-sensitive content now survives encryption** - URLs, passwords, and
+  mixed-case strings decrypt identically to their original form.
+
+### Updates
+- Step mask updated from 47/68 to 65/94 (same ~69% ratio maintained).
+- Max steck pairs increases from 34 to 47.
+- IoC floor drops from 1/68 (0.01471) to 1/94 (0.01064).
+- Keyspace at maximum configuration: ~4.024 x 10^126 (~421 bits).
+- Lowercase warning removed from HTML (no longer needed).
+- Electron About dialog updated to reflect 94-symbol alphabet and new keyspace.
+
+---
+
 ## v2.0.0 - Official Release
 
 ### Breaking Change
@@ -186,7 +210,7 @@
 
 ### Cipher
 - 68-symbol alphabet (A–Z, ;, 0–9, special characters)
-- 1-13 rotors with key-derived irregular stepping (47/68 mask)
+- 1–13 rotors with key-derived irregular stepping (47/68 mask)
 - Steckerbrett: up to 34 symmetric character-pair swaps
 - Dynamic plugboard/scramble from unused keyboard layouts
 - 10 keyboard layouts as substitution tables
