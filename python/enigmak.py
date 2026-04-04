@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v2.0.0 - Command-line cipher machine
+ENIGMAK v3.0.0-rc.1 - Command-line cipher machine
 68-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -19,9 +19,9 @@ import secrets
 import argparse
 
 # ── Alphabet ──────────────────────────────────────────────────────────────────
-ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' + '!@#$%^&*()_+{}|:"<>?`~'
-N = len(ALPHA)  # 68
-assert N == 68
+ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' + '!@#$%^&*()_+{}|:"<>?`~' + 'abcdefghijklmnopqrstuvwxyz'
+N = len(ALPHA)  # 94
+assert N == 94
 
 LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
                 'Norman','Asset','Halmak','AZERTY','QWERTZ']
@@ -96,7 +96,7 @@ def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
         j = v % (i + 1)
         step_pos[i], step_pos[j] = step_pos[j], step_pos[i]
     step_mask = [False] * N
-    for p in step_pos[:47]:
+    for p in step_pos[:65]:
         step_mask[p] = True
 
     # Diffusion transposition
@@ -215,9 +215,7 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
     result = []
     ci = 0
     for c in text:
-        # Fold lowercase a-z to uppercase
-        ch = c.upper() if 'a' <= c <= 'z' else c
-        if ch not in ALPHA:
+        if c not in ALPHA:
             result.append(c)
             continue
 
@@ -233,7 +231,7 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
         scramble_shifts = [(ss + rds + i + ci + pos_offset + keyed_layout_offset(unused[i], km['layout_key_base'])) % N
                            for i in range(len(unused))]
 
-        x = ch
+        x = c
         if not decrypt:
             x = steck_map[x]
             x = plug_fwd(x, unused, lm)
@@ -481,7 +479,7 @@ def cmd_keystrength(key_str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v2.0.0 - 68-symbol rotor cipher',
+        description='ENIGMAK v3.0.0-rc.1 - 68-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
