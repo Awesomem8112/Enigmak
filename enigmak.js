@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v2.0.0 - JavaScript module
+ * ENIGMAK v3.0.0-rc.1 - JavaScript module
  * 68-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -16,8 +16,9 @@
 
 // ── Alphabet ──────────────────────────────────────────────────────────────────
 const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' +
-              '!@#$%^&*()_+{}|:"<>?`~';
-const N = ALPHA.length; // 68
+              '!@#$%^&*()_+{}|:"<>?`~' +
+              'abcdefghijklmnopqrstuvwxyz';
+const N = ALPHA.length; // 94
 
 const LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
                       'Norman','Asset','Halmak','AZERTY','QWERTZ'];
@@ -87,7 +88,7 @@ function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   let v = (keySum ^ 0x5A5A5A5A) >>> 0;
   for (let i=N-1;i>0;i--) { v=lcg(v); const j=v%(i+1); [stepPos[i],stepPos[j]]=[stepPos[j],stepPos[i]]; }
   const stepMask = new Array(N).fill(false);
-  stepPos.slice(0,47).forEach(p => stepMask[p] = true);
+  stepPos.slice(0,65).forEach(p => stepMask[p] = true);
 
   const transPerm = [...Array(N).keys()];
   v = (keySum ^ 0xDEAD1234) >>> 0;
@@ -168,8 +169,7 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
   let result = '', ci = 0;
 
   for (const c of text) {
-    const ch = (c >= 'a' && c <= 'z') ? c.toUpperCase() : c;
-    if (!ALPHA.includes(ch)) { result += c; continue; }
+    if (!ALPHA.includes(c)) { result += c; continue; }
     const ss = rotorShift(rs);
     const rL = [], rS = [];
     // Position offset: rotor state feedback breaks monocharacter oracle
@@ -180,7 +180,7 @@ function _process(text, steckPairs, rotors, enabledLayouts, userRounds, nonce=''
       rS.push((ss + r + ci + posOffset + keyedLayoutOffset(lay, km.layoutKeyBase)) % N);
     }
     const sS = unused.map((_,i) => (ss+rds+i+ci+posOffset+keyedLayoutOffset(unused[i],km.layoutKeyBase))%N);
-    let x = ch;
+    let x = c;
     if (!decrypt) {
       x=applySteck(x); x=plugFwd(x,unused,lm);
       for (let r=0;r<rds;r++) x=applyLayout(x,rL[r],rS[r],false,lm,ilm);
