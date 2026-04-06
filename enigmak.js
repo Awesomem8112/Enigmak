@@ -1,6 +1,6 @@
 /**
- * ENIGMAK v3.0.0-rc.1 - JavaScript module
- * 68-symbol multi-round substitution-permutation rotor cipher
+ * ENIGMAK v3.0.0-rc.2 - JavaScript module
+ * 95-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
  *   const { encrypt, decrypt, generateKey, calcIoC } = require('./enigmak.js');
@@ -17,8 +17,11 @@
 // ── Alphabet ──────────────────────────────────────────────────────────────────
 const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' +
               '!@#$%^&*()_+{}|:"<>?`~' +
-              'abcdefghijklmnopqrstuvwxyz';
-const N = ALPHA.length; // 94
+              'abcdefghijklmnopqrstuvwxyz ';
+const N = ALPHA.length; // 95
+const STEP_MASK_ACTIVE = 66;
+const CHECKSUM_LEN = 10;
+const U64_MASK = (1n << 64n) - 1n;
 
 const LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
                       'Norman','Asset','Halmak','AZERTY','QWERTZ'];
@@ -63,6 +66,17 @@ function hashStr(s) {
 }
 
 function lcg(v) { return (Math.imul(v, 1664525) + 1013904223) >>> 0; }
+function lcg64(v) { return (v * 6364136223846793005n + 1442695040888963407n) & U64_MASK; }
+
+function hashStr64(s) {
+  const bytes = new TextEncoder().encode(s);
+  let h = 0xcbf29ce484222325n;
+  for (const b of bytes) {
+    h ^= BigInt(b);
+    h = (h * 0x100000001b3n) & U64_MASK;
+  }
+  return h;
+}
 
 function rotorStateHash(rotors) {
   let h = 2166136261;
@@ -88,7 +102,7 @@ function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   let v = (keySum ^ 0x5A5A5A5A) >>> 0;
   for (let i=N-1;i>0;i--) { v=lcg(v); const j=v%(i+1); [stepPos[i],stepPos[j]]=[stepPos[j],stepPos[i]]; }
   const stepMask = new Array(N).fill(false);
-  stepPos.slice(0,65).forEach(p => stepMask[p] = true);
+  stepPos.slice(0,STEP_MASK_ACTIVE).forEach(p => stepMask[p] = true);
 
   const transPerm = [...Array(N).keys()];
   v = (keySum ^ 0xDEAD1234) >>> 0;
@@ -261,13 +275,13 @@ function _rotorStateHashJS(rs) {
 }
 
 // ── Checksum ──────────────────────────────────────────────────────────────────
-const CHECKSUM_LEN = 4;
-
 function computeChecksum(plaintext, keyStr) {
-  const h1 = hashStr(plaintext + '|' + keyStr + '|chk1');
-  const h2 = hashStr(plaintext + '|' + keyStr + '|chk2');
-  let out = '', v = (h1 ^ (h2 << 16)) >>> 0;
-  for (let i=0;i<CHECKSUM_LEN;i++) { v=lcg(v); out+=ALPHA[v%N]; }
+  let out = '';
+  let v = hashStr64(plaintext + '|' + keyStr + '|chk64');
+  for (let i = 0; i < CHECKSUM_LEN; i++) {
+    v = lcg64(v ^ BigInt(i));
+    out += ALPHA[Number(v % BigInt(N))];
+  }
   return out;
 }
 

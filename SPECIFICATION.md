@@ -1,300 +1,465 @@
-# ENIGMAK v2.0.0-rc.3 - Formal Specification
+# ENIGMAK v3.0.0-rc.2 Formal Specification
 
 ## 1. Overview
 
-ENIGMAK is a symmetric, stateful, character-by-character substitution cipher operating over a 68-symbol alphabet. It combines a multi-rotor substitution mechanism with a plugboard, steckerbrett, diffusion transposition, and key-derived irregular stepping.
+ENIGMAK is a symmetric, stateful, character-by-character
+substitution-permutation rotor cipher operating over a 95-symbol ASCII
+alphabet. It combines:
 
----
+- a steckerbrett
+- keyed layout permutations
+- multi-round shifted substitution
+- keyed diffusion
+- state-dependent offsets
+- position whitening
+- a keyed embedded checksum
 
 ## 2. Alphabet
 
-The alphabet Σ consists of 68 characters, indexed 0–67:
+The alphabet `Sigma` is:
 
-```
-Index  0– 25: A B C D E F G H I J K L M N O P Q R S T U V W X Y Z
-Index  26:    ;
-Index  27– 36: 0 1 2 3 4 5 6 7 8 9
-Index  37– 67: - = [ ] \ ' , . / ! @ # $ % ^ & * ( ) _ + { } | : " < > ? ` ~
+```text
+ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\',./!@#$%^&*()_+{}|:"<>?`~abcdefghijklmnopqrstuvwxyz[space]
 ```
 
-N = |Σ| = 68
+Index ranges:
 
----
-
-## 3. Keyboard Layouts
-
-Ten physical keyboard layouts serve as substitution tables. Each maps the 30 standard QWERTY positions (10 top row + 10 home row + 7 bottom row + semicolon) to characters in Σ.
-
-```
-Layout 0  QWERTY      Top: QWERTYUIOP  Home: ASDFGHJKL;  Bot: ZXCVBNM
-Layout 1  Colemak     Top: QWFPGJLUY;  Home: ARSTDHNEIO  Bot: ZXCVBKM
-Layout 2  Colemak-DH  Top: QWFPBJLUY;  Home: ARSTGMNEIO  Bot: ZXCDVKH
-Layout 3  Dvorak      Top: ;VZPYFGCRL  Home: AOEUIDHTNS  Bot: QJKXBMWVZ
-Layout 4  Workman     Top: QDRWBJFUP;  Home: ASHTGYNEOI  Bot: ZXMCVKL
-Layout 5  Norman      Top: QWDFKJURL;  Home: ASETGYNIOH  Bot: ZXCVBPM
-Layout 6  Asset       Top: QWJFGYPUL;  Home: ASETDHNIOR  Bot: ZXCVBKM
-Layout 7  Halmak      Top: WLRBJZFUO;  Home: SHNTMEDAIC  Bot: QGVXPKY
-Layout 8  AZERTY      Top: AZERTYUIOP  Home: QSDFGHJKL;  Bot: WXCVBNM
-Layout 9  QWERTZ      Top: QWERTZUIOP  Home: ASDFGHJKL;  Bot: YXCVBNM
+```text
+ 0-25  : A-Z
+26     : ;
+27-36  : 0-9
+37-67  : - = [ ] \ ' , . / ! @ # $ % ^ & * ( ) _ + { } | : " < > ? ` ~
+68-93  : a-z
+94     : [space]
 ```
 
-For layout L, define:
-- `sub_L(c)` - substitution mapping: physical QWERTY key c → layout L output
-- `sub_L⁻¹(c)` - inverse substitution
+`N = 95`
 
----
+Characters not in `Sigma` pass through unchanged and do not advance the rotor
+state.
+
+## 3. Layout Labels
+
+The implementation uses ten stable layout labels:
+
+```text
+0 QWERTY
+1 Colemak
+2 Colemak-DH
+3 Dvorak
+4 Workman
+5 Norman
+6 Asset
+7 Halmak
+8 AZERTY
+9 QWERTZ
+```
+
+These names no longer act as raw ergonomic substitution tables in the
+cryptographic core. Instead, each label seeds an independent key-derived
+permutation of the full 95-symbol alphabet.
 
 ## 4. Key Structure
 
-A key consists of five components:
+A key has four required sections and one optional nonce section:
 
-| Component | Description | Range |
-|-----------|-------------|-------|
-| E | Ordered set of enabled layout indices | Subset of {0..9}, |E| ≥ 1 |
-| ρ | Sequence of r rotors, each (layout_index, position) | r ∈ {1..13}, position ∈ {0..67} |
-| σ | Steckerbrett: set of k character-pair swaps | k ∈ {0..34}, pairs disjoint |
-| U | User-set base round count | U ∈ {1..999} |
-| η | Nonce (optional): sequence of characters from Σ | Length 0–13 |
-
-**Key string format:** `[E] [ρ] [σ] [U] [η?]`
-- E: layout indices concatenated (e.g. `1234`)
-- ρ: triples of `{layout_digit}{pos_2digit}` concatenated (e.g. `102031`)
-- σ: quadruples of `{lo_2digit}{hi_2digit}` concatenated, or `0` (e.g. `0621`)
-- U: 3-digit zero-padded integer
-- η: pairs of 2-digit character indices concatenated (optional)
-
----
-
-## 5. Key Material Derivation
-
-### 5.1 Steckerbrett sum
-
-For each pair (a, b) in σ, let aᵢ = Σ.index(a), bᵢ = Σ.index(b):
-
-```
-S = Σ (min(aᵢ, bᵢ) × N + max(aᵢ, bᵢ))
+```text
+[enabled] [rotors] [steck] [U] [nonce?]
 ```
 
-Pair ordering is normalized - min/max ensures click order does not affect S.
+### 4.1 Enabled layouts
 
-### 5.2 Rotor position sum
+`enabled` is an ordered sequence of distinct layout digits from `0..9`.
 
+Example:
+
+```text
+0538
 ```
-R = Σ pos(ρᵢ)
+
+### 4.2 Rotors
+
+`rotors` is a concatenation of triples:
+
+```text
+{layoutDigit}{position2digits}
 ```
 
-### 5.3 Layout index sum
+Each rotor position is in `00..94`.
 
+### 4.3 Steckerbrett
+
+`steck` is either:
+
+- `0` when no pairs are present, or
+- a concatenation of quadruples:
+
+```text
+{lo2digits}{hi2digits}
 ```
-L = Σ index(eⱼ) for eⱼ ∈ E
+
+Where each pair refers to two alphabet indices and `lo < hi`.
+
+Maximum stecker pairs: `47`
+
+### 4.4 User rounds
+
+`U` is a 3-digit integer in `001..999`.
+
+### 4.5 Nonce
+
+`nonce` is optional and encodes alphabet indices as concatenated 2-digit
+values. Built-in generators currently emit 3 nonce characters.
+
+## 5. Derived Key Material
+
+Let:
+
+- `S` = normalized stecker sum
+- `R` = rotor position sum
+- `L` = enabled-layout index sum
+- `U` = user-selected base rounds
+
+### 5.1 Stecker sum
+
+For each pair `(a, b)`:
+
+```text
+ai = index(a)
+bi = index(b)
+S += min(ai, bi) * N + max(ai, bi)
+```
+
+### 5.2 Rotor sum
+
+```text
+R = sum(rotor.pos)
+```
+
+### 5.3 Enabled-layout sum
+
+```text
+L = sum(layoutIndex)
 ```
 
 ### 5.4 Final round count
 
-```
+```text
 rounds = ((S + R + L + U) mod 999) + 1
 ```
 
-### 5.5 Key hash
+### 5.5 Key sum
 
-```
-keySum = (S×31 + R×17 + L×13) mod 2³²
-```
-
-### 5.6 Step mask (Fisher-Yates, seed = keySum XOR 0x5A5A5A5A)
-
-Produces a 68-element boolean mask with exactly 47 true positions using an LCG-seeded Fisher-Yates shuffle:
-
-```
-v = keySum XOR 0x5A5A5A5A
-pos = [0, 1, ..., N-1]
-for i = N-1 downto 1:
-    v = (v × 1664525 + 1013904223) mod 2³²
-    j = v mod (i+1)
-    swap(pos[i], pos[j])
-stepMask[pos[0..46]] = true
+```text
+keySum = (S*31 + R*17 + L*13) mod 2^32
 ```
 
-### 5.7 Diffusion permutation (Fisher-Yates, seed = keySum XOR 0xDEAD1234)
+## 6. Step Mask
 
-Produces a keyed 68-position permutation π and its inverse π⁻¹:
+The step mask is derived by Fisher-Yates shuffling `[0..N-1]` with a 32-bit
+LCG seeded from:
 
-```
-v = keySum XOR 0xDEAD1234
-perm = [0, 1, ..., N-1]
-for i = N-1 downto 1:
-    v = (v × 1664525 + 1013904223) mod 2³²
-    j = v mod (i+1)
-    swap(perm[i], perm[j])
-π = perm
-π⁻¹[π[i]] = i for all i
+```text
+seed = keySum XOR 0x5A5A5A5A
 ```
 
-### 5.8 Layout key base
+LCG:
 
+```text
+v = (v * 1664525 + 1013904223) mod 2^32
 ```
+
+Exactly `66` positions are marked active, giving a `66/95` stepping mask.
+
+## 7. Diffusion Permutation
+
+The diffusion permutation is another Fisher-Yates shuffle over `[0..N-1]`
+using:
+
+```text
+seed = keySum XOR 0xDEAD1234
+```
+
+This produces:
+
+- `transPerm` for encryption
+- `invTransPerm` for decryption
+
+The permutation length is `95`.
+
+## 8. Keyed Layout Permutations
+
+For layout label `li` in `0..9`, derive a full-alphabet permutation using:
+
+```text
+seed = keySum XOR (li * 0x9E3779B9 + 0xABCD1234)
+```
+
+This yields:
+
+- `layoutMaps[name]`
+- `invLayoutMaps[name]`
+
+Both are full bijections over the 95-symbol alphabet.
+
+Also derive:
+
+```text
 layoutKeyBase = keySum mod N
+keyedLayoutOffset(name) = (layoutIndex(name) * 7 + layoutKeyBase) mod N
 ```
 
-### 5.9 Keyed layout offset
+## 9. Rotor Mechanics
 
-For layout with index l:
+### 9.1 Nonce application
 
-```
-offset(l) = (l × 7 + layoutKeyBase) mod N
-```
+Before processing characters, adjust each rotor position:
 
----
-
-## 6. Rotor Mechanics
-
-### 6.1 Nonce application
-
-If nonce η is present, adjust each rotor's starting position:
-
-```
-pos'(ρᵢ) = (pos(ρᵢ) + Σ.index(η[i])) mod N
+```text
+rotor[i].pos = (rotor[i].pos + nonceIndex(i)) mod N
 ```
 
-for i ∈ {0..|ρ|-1} where η[i] is the i-th nonce character (0 if i ≥ |η|).
+Where `nonceIndex(i)` is the alphabet index of nonce character `i`, or `0`
+when no nonce character exists at that position.
 
-### 6.2 Combined rotor shift
+### 9.2 Combined rotor shift
 
-For rotor state [ρ₀, ρ₁, ..., ρ_{r-1}]:
+Treat the rotor register as a base-95 number:
 
-```
-shift = (Σ pos(ρᵢ) × N^(r-1-i)) mod N
-```
-
-Computed in arbitrary-precision arithmetic to avoid float overflow.
-
-### 6.3 Rotor advance
-
-After processing character at position ci:
-- If `stepMask[ci mod N]` is false: rotors do not advance
-- Otherwise: rightmost rotor increments; carries propagate left on rollover (odometer)
-
-### 6.4 Position offset with rotor state feedback
-
-To prevent the monocharacter oracle attack (encrypting repeated characters reveals rotor cycle structure), each character's round and scramble shifts include a position-dependent offset derived from the current rotor state:
-
-```
-rsHash = FNV-1a(rotor positions) - digest of current rotor state
-posOffset = (keySum × 37 + ci × 13 + rsHash) mod N
+```text
+shift = sum(rotor[i].pos * N^(r-1-i)) mod N
 ```
 
-This creates a feedback loop: rotor state after character N influences the offset for character N+1, making repeated plaintext characters produce different rotor query indices across encryption runs.
+### 9.3 Rotor-state hash
 
----
+For the current rotor state:
 
-## 7. Encryption Pipeline
-
-For each character c in plaintext:
-
-1. **Fold case:** if c ∈ {a..z}, replace with c.toUpperCase()
-2. **Passthrough:** if c ∉ Σ, output c unchanged, do not advance rotors
-3. **Compute shift:** ss = combined rotor shift
-4. **Compute position offset:** posOffset = (keySum × 37 + ci × 13 + rsHash) mod N
-5. **Build round parameters:**
-   - For round r ∈ {0..rounds-1}: layout = E[r mod |E|], shift_r = (ss + r + ci + posOffset + offset(layout)) mod N
-6. **Build scramble parameters:**
-   - unusedLayouts = E \ {layouts assigned to rotors}
-   - For i ∈ {0..|unused|-1}: scramble_shift_i = (ss + rounds + i + ci + posOffset + offset(unused[i])) mod N
-7. **Apply steckerbrett in:** c ← σ(c)
-8. **Apply plugboard forward:** c ← sub_{unused[0]}(sub_{unused[1]}(...(c)...))
-9. **Apply rotor rounds:** for r = 0 to rounds-1: c ← Σ[(Σ.index(sub_{layout_r}(c)) + shift_r) mod N]
-10. **Apply diffusion:** c ← Σ[π[Σ.index(c)]]
-11. **Apply scramble:** for i = 0 to |unused|-1: c ← Σ[(Σ.index(sub_{unused[i]}(c)) + scramble_shift_i) mod N]
-12. **Apply plugboard inverse:** reverse of step 8
-13. **Apply steckerbrett out:** c ← σ(c) (same map, symmetric)
-14. **Position whitening:** c ← Σ[(Σ.index(c) + (lcg_state mod N)) mod N]
-15. **Advance rotors**
-
----
-
-## 8. Decryption Pipeline
-
-Reverse of encryption - all operations inverted in reverse order:
-
-1. Fold case
-2. Passthrough check
-3. Compute shift
-4. Build round/scramble parameters (identical to encryption)
-5. Apply steckerbrett in
-6. Apply plugboard inverse
-7. Apply scramble inverse (reversed, inverse shifts)
-8. Apply diffusion inverse: c ← Σ[π⁻¹[Σ.index(c)]]
-9. Apply rotor rounds inverse (reversed, inverse substitutions)
-10. Apply plugboard forward
-11. Apply steckerbrett out
-12. Advance rotors
-
----
-
-## 9. Message Authentication
-
-### 9.1 Checksum computation
-
-```
-h1 = FNV1a(plaintext || "|" || keyStr || "|chk1")
-h2 = FNV1a(plaintext || "|" || keyStr || "|chk2")
-v = (h1 XOR (h2 << 16)) mod 2³²
-for i = 0 to 3:
-    v = (v × 1664525 + 1013904223) mod 2³²
-    checksum[i] = Σ[v mod N]
-```
-
-Checksum length = 4 characters.
-
-### 9.2 Checksum position
-
-```
-pos = FNV1a(keyStr || "chkpos") mod max(1, |ciphertext+checksum| - 4)
-```
-
-The 4-character checksum is inserted at position `pos` within the ciphertext.
-
-### 9.3 FNV-1a hash primitive
-
-```
+```text
 h = 2166136261
-for each byte b in input:
-    h = (h XOR b) × 16777619 mod 2³²
+for each rotor:
+    h = (h XOR (rotor.pos * 73)) * 16777619 mod 2^32
 ```
 
----
+### 9.4 Position offset
 
-## 10. Key Fingerprint
-
-```
-h = FNV1a(keyStr || "fp")
-v = h
-for i = 0 to 3:
-    v = (v × 1664525 + 1013904223) mod 2³²
-    fingerprint[i] = charset[v mod 36]    // charset = A-Z0-9
+```text
+posOffset = (keySum * 37 + ci * 13 + rotorStateHash) mod N
 ```
 
----
+This makes per-character shifts depend on both absolute position and the live
+rotor state.
 
-## 11. Keyspace
+### 9.5 Rotor advance
 
-Maximum configuration (34 steck pairs, 13 rotors, 10 layouts, U ∈ {1..999}):
+After each processed in-alphabet character:
 
+- if `stepMask[ci mod N]` is false, do not advance
+- otherwise increment the rightmost rotor
+- propagate carries left on rollover
+
+## 10. Plugboard And Scramble Sets
+
+Let:
+
+- `enabledList` = enabled layouts in key order
+- `rotorSet` = layout names currently assigned to rotors
+- `unusedLayouts` = enabled layouts not currently assigned to any rotor
+
+Plugboard forward:
+
+```text
+plugFwd(x) = apply layoutMaps for unusedLayouts in order, no shifts
 ```
-|Steck(68,34)| × |Rotors| × |Layouts| × 999
-= 7.515×10⁵² × 6.657×10³⁵ × 9,864,100 × 999
-≈ 4.929 × 10⁹⁸
+
+Plugboard inverse:
+
+```text
+plugInv(x) = apply invLayoutMaps for unusedLayouts in reverse order, no shifts
 ```
 
-Approximate key strength: 325 bits at maximum configuration.
+## 11. Per-Character Encryption
 
----
+For each in-alphabet plaintext character `x` at in-alphabet position `ci`:
 
-## 12. Security Notes
+1. Compute `ss = rotorShift(state)`.
+2. Compute `posOffset`.
+3. Build round layouts:
 
-- **No reflector:** Characters can encrypt to themselves
-- **No algebraic shortcut** known for the full pipeline
-- **Keyboard layout bias:** Layout substitution tables were designed for ergonomic typing, not cryptographic uniformity - theoretical non-uniformity may exist at high character counts
-- **Key reuse:** Two messages under the same key produce correlated ciphertext; key reuse is strongly discouraged
-- **Monocharacter oracle:** Encrypting a single repeated character under chosen-plaintext reveals rotor cycle structure
-- **Not formally audited:** This specification has not undergone professional cryptanalytic review
+```text
+roundLayout[r] = enabledList[r mod len(enabledList)]
+roundShift[r]  = (ss + r + ci + posOffset + keyedLayoutOffset(roundLayout[r])) mod N
+```
+
+4. Build scramble shifts for `unusedLayouts`:
+
+```text
+scrambleShift[i] = (ss + rounds + i + ci + posOffset +
+                    keyedLayoutOffset(unusedLayouts[i])) mod N
+```
+
+5. Apply:
+
+```text
+x = steck(x)
+x = plugFwd(x)
+for each round r:
+    x = layoutMaps[roundLayout[r]][x]
+    x = Sigma[(index(x) + roundShift[r]) mod N]
+x = Sigma[transPerm[index(x)]]
+for each unused layout i:
+    x = layoutMaps[unusedLayouts[i]][x]
+    x = Sigma[(index(x) + scrambleShift[i]) mod N]
+x = plugFwd(x)
+x = steck(x)
+```
+
+6. Apply position whitening:
+
+```text
+whiteningState = lcg32(whiteningState)
+x = Sigma[(index(x) + (whiteningState mod N)) mod N]
+```
+
+7. Advance rotors.
+
+## 12. Per-Character Decryption
+
+For each in-alphabet ciphertext character `x` at in-alphabet position `ci`:
+
+1. Compute the same `ss`, `posOffset`, round layouts, and scramble shifts.
+2. Remove whitening first:
+
+```text
+whiteningState = lcg32(whiteningState)
+x = Sigma[(index(x) - (whiteningState mod N)) mod N]
+```
+
+3. Apply:
+
+```text
+x = steck(x)
+x = plugInv(x)
+for unused layouts in reverse order:
+    x = Sigma[(index(x) - scrambleShift[i]) mod N]
+    x = invLayoutMaps[unusedLayouts[i]][x]
+x = Sigma[invTransPerm[index(x)]]
+for rounds in reverse order:
+    x = Sigma[(index(x) - roundShift[r]) mod N]
+    x = invLayoutMaps[roundLayout[r]][x]
+x = plugInv(x)
+x = steck(x)
+```
+
+4. Advance rotors.
+
+## 13. Position Whitening
+
+Initial whitening seed:
+
+```text
+whiteningSeed = keySum XOR 0xC0FFEE42
+```
+
+32-bit LCG:
+
+```text
+lcg32(v) = (v * 1664525 + 1013904223) mod 2^32
+```
+
+## 14. Checksum
+
+### 14.1 Checksum generation
+
+Checksum length:
+
+```text
+CHECKSUM_LEN = 10
+```
+
+Use 64-bit FNV-1a over UTF-8 bytes:
+
+```text
+h = 0xCBF29CE484222325
+for each byte b:
+    h = (h XOR b) * 0x100000001B3 mod 2^64
+```
+
+Seed input:
+
+```text
+plaintext + "|" + keyStr + "|chk64"
+```
+
+Then emit 10 symbols with a 64-bit LCG:
+
+```text
+lcg64(v) = (v * 6364136223846793005 + 1442695040888963407) mod 2^64
+
+v = hash64(seedInput)
+for i in 0..9:
+    v = lcg64(v XOR i)
+    checksum[i] = Sigma[v mod N]
+```
+
+### 14.2 Checksum position
+
+The insertion position is derived from the ASCII key string with 32-bit FNV-1a:
+
+```text
+pos = hash32(keyStr + "chkpos") mod max(1, totalLen - CHECKSUM_LEN)
+```
+
+### 14.3 Ciphertext layout
+
+Encryption inserts the 10-character checksum at `pos` inside the ciphertext.
+
+Decryption:
+
+- removes 10 characters from the same derived position when the input length is
+  greater than `CHECKSUM_LEN`
+- decrypts the stripped ciphertext
+- recomputes the expected checksum from the recovered plaintext
+- compares extracted and expected checksum strings
+
+## 15. Key Fingerprint
+
+Fingerprint generation uses 32-bit FNV-1a plus the 32-bit LCG over the
+character set `A-Z0-9`:
+
+```text
+seed = hash32(keyStr + "fp")
+for i in 0..3:
+    seed = lcg32(seed)
+    fingerprint[i] = charset[seed mod 36]
+```
+
+Fingerprint length: `4`
+
+## 16. Keyspace
+
+At maximum built-in configuration:
+
+- enabled layouts: all 10
+- rotors: 13
+- stecker pairs: 47
+- user rounds: 999 possibilities
+- nonce: 3 characters when generated by built-in tools
+
+Approximate total:
+
+```text
+4.528 x 10^128
+```
+
+Approximate strength:
+
+```text
+427 bits
+```
+
+## 17. Current Limits
+
+- Non-ASCII / Unicode characters are still passthrough in `rc.2`.
+- The checksum is not a replacement for researched authenticated encryption.
+- Key reuse creates correlated ciphertext and should be avoided.
+- No formal audit has been completed.

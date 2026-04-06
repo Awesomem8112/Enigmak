@@ -1,3 +1,29 @@
+## v3.0.0-rc.2 - Release Candidate 2 (not officially released)
+
+### Breaking Change
+- Ciphertexts from v3.0.0-rc.1 and earlier are not compatible with rc.2.
+  The alphabet has been expanded from 94 to 95 symbols and the checksum
+  format has changed. Existing messages must be re-encrypted.
+
+### New Features
+- **Space added to alphabet** - spaces now go through the full cipher
+  pipeline as regular symbols instead of passing through unchanged.
+- **Word boundary leakage removed** - because spaces are now encrypted,
+  ciphertext no longer exposes plaintext word lengths.
+- **Checksum upgraded to 64-bit** - ciphertext now carries a 64-bit
+  checksum encoded as 10 base-95 characters, improving integrity checks.
+
+### Updates
+- Step mask updated from 65/94 to 66/95 (same ~69% ratio maintained).
+- Max steck pairs remains 47.
+- IoC floor drops from 1/94 (0.01064) to 1/95 (0.01053).
+- Keyspace at maximum configuration: ~4.528 x 10^128 (~427 bits).
+- Electron About dialog updated to reflect 95-symbol alphabet and new keyspace.
+- docs/ and Electron HTML copies synced to the root machine so all shipped
+  interfaces use the same 95-symbol alphabet and 64-bit checksum.
+
+---
+
 ## v3.0.0-rc.1 - Release Candidate 1 (not officially released)
 
 ### Breaking Change

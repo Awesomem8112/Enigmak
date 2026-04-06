@@ -1,228 +1,218 @@
-# ENIGMAK: Building a Custom Rotor Cipher from Scratch
+# ENIGMAK Technical Notes
 
-## What is ENIGMAK?
+This document describes the current `v3.0.0-rc.2` design at a high level. It
+is meant to complement `SPECIFICATION.md`, not replace it.
 
-ENIGMAK is a custom symmetric cipher machine built around the concept of rotor-based encryption, inspired by the historical Enigma machine used in World War II but redesigned from the ground up with modern cryptographic principles in mind.
+## Current RC.2 Snapshot
 
-It operates on a 68symbol alphabet covering uppercase letters, digits, and all standard special characters, runs entirely offline as a single HTML file, and is available as a Python CLI and JavaScript module for developers.
+The active branch currently uses:
 
-This document covers the design decisions, the statistical testing methodology, two confirmed weaknesses discovered by the community, and how they were fixed.
+- a 95-symbol ASCII alphabet
+- space as a first-class cipher symbol
+- 1-13 rotors
+- a `66/95` irregular step mask
+- up to 47 stecker pairs
+- keyed full-alphabet layout permutations
+- keyed 95-position diffusion
+- rotor-state feedback in position offsets
+- position whitening
+- a 64-bit checksum encoded as 10 base-95 characters
 
+Lowercase letters were added in `rc.1`. Space encryption and the larger
+checksum landed in `rc.2`.
 
+## The 95-Symbol Alphabet
 
-## The Architecture
+The live alphabet is:
 
-### Why Rotors?
-
-The Enigma machine worked by passing each character through a series of rotating substitution wheels, with each keypress advancing the wheels in an odometer pattern. This meant the same letter typed twice in a row produced two different ciphertext characters  a significant improvement over simple substitution ciphers.
-
-ENIGMAK inherits this concept but extends it significantly.
-
-### The 68Symbol Alphabet
-
-Most classical ciphers operate on 26 letters. ENIGMAK operates on 68 symbols:
-
+```text
+ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\',./!@#$%^&*()_+{}|:"<>?`~abcdefghijklmnopqrstuvwxyz[space]
 ```
-A-Z, ;, 0-9, - = [ ] \ ' , . / ! @ # $ % ^ & * ( ) _ + { } | : " < > ? ` ~
+
+This gives ENIGMAK a theoretical random IoC floor of `1/95 ~= 0.01053`.
+
+Two consequences matter in practice:
+
+- Mixed-case strings survive encryption intact because lowercase letters are no
+  longer folded into uppercase.
+- Spaces no longer leak plaintext word boundaries because space is now
+  encrypted like any other symbol.
+
+Non-ASCII characters are still outside the cipher alphabet and pass through
+unchanged in `rc.2`.
+
+## Keyed Layout Permutations
+
+The ten layout names remain:
+
+```text
+QWERTY, Colemak, Colemak-DH, Dvorak, Workman,
+Norman, Asset, Halmak, AZERTY, QWERTZ
 ```
 
-This means digits and special characters are first-class cipher symbols  they go through the full encryption pipeline rather than passing through unchanged. The immediate benefit is a lower Index of Coincidence (IoC) floor: 1/68 ≈ 0.0147 versus 1/26 ≈ 0.0385 for a standard alphabet. A lower floor means more statistical headroom before a ciphertext starts looking structured.
+In the current design they are not used as raw ergonomic substitution tables.
+Instead, each layout name seeds an independent key-derived permutation of the
+full 95-symbol alphabet. This keeps the layout labels stable while removing the
+ earlier bias from fixed keyboard-shaped mappings.
 
-### Ten Keyboard Layouts as Substitution Tables
+## Key Material
 
-ENIGMAK uses ten physical keyboard layouts (QWERTY, Colemak, ColemakDH, Dvorak, Workman, Norman, Asset, Halmak, AZERTY, QWERTZ) as the wiring for its substitution layers. Each layout defines a mapping from one set of character positions to another, creating a substitution table.
+The core derived values are:
 
-In v1.0.0, these were fixed  the same wiring regardless of key. In v2.0.0-rc.3.1, they are key-derived (more on this below).
-
-### The Steckerbrett
-
-Borrowed directly from Enigma, the Steckerbrett is a plugboard that swaps pairs of characters before and after all other processing. ENIGMAK supports up to 34 symmetric pairs from the 68character alphabet. The swap is symmetric  if A maps to Z, then Z maps to A  and is applied identically at the start and end of the pipeline.
-
-### KeyDerived Rounds
-
-Unlike Enigma which applied one substitution pass per character, ENIGMAK applies multiple rounds. The round count is derived from all key material:
-
-```
+```text
 rounds = ((S + R + L + U) mod 999) + 1
+keySum = (S*31 + R*17 + L*13) mod 2^32
 ```
 
-Where S is a steckerbrett sum, R is the rotor position sum, L is the layout index sum, and U is a userset base value from 1 to 999. This means the round count changes with every key and is never directly stored  an attacker cannot simply look at the key string and know how many rounds were used.
+Where:
 
-### Irregular Stepping
+- `S` is the normalized stecker-pair sum
+- `R` is the rotor position sum
+- `L` is the enabled-layout index sum
+- `U` is the user-supplied base round count
 
-In Enigma, the rightmost rotor advanced with every keypress in a predictable odometer pattern. This regularity was one of the properties that made cryptanalysis possible.
+From `keySum`, ENIGMAK derives:
 
-ENIGMAK uses a key-derived 47/68 step mask  a boolean array of 68 positions derived from the key via FisherYates shuffle. The rotor only advances when the current character position modulo 68 falls on an active mask position. This eliminates the lag68 periodicity that would otherwise appear.
+- the `66/95` step mask
+- the 95-position diffusion permutation
+- the per-layout permutation seeds
+- the position whitening seed
 
-### No Reflector
+## Rotor Mechanics
 
-The original Enigma included a reflector, which created a fatal property: no letter could ever encrypt to itself. This constraint gave Bletchley Park's codebreakers a foothold  any proposed decryption that mapped a letter to itself could be immediately rejected.
+The rotor model keeps the Enigma-style idea that state evolves per character,
+but most of the mechanics are custom:
 
-ENIGMAK has no reflector. A character can encrypt to itself depending on the rotor state. There is no such foothold available.
+- rotor positions are base-95 instead of base-26
+- stepping is gated by a key-derived boolean mask
+- the combined shift is derived from the entire rotor register
+- the current rotor state is hashed back into the next character's offsets
 
-### The Full PerCharacter Pipeline
+The rotor-state feedback is important. Without it, repeated plaintext under
+chosen-plaintext conditions can reveal exploitable cycle structure.
 
-For each character in the plaintext:
+## Encryption Pipeline
 
+Per in-alphabet character, the current code performs:
+
+```text
+1. Steckerbrett in
+2. Plugboard forward using unused keyed layouts
+3. N rotor rounds
+4. Diffusion through a keyed 95-position permutation
+5. Scramble through unused keyed layouts with shifts
+6. Plugboard forward again
+7. Steckerbrett out
+8. Position whitening
 ```
-1. Steckerbrett in       (symmetric swap)
-2. Plugboard forward     (unused layouts, sequential substitution)
-3. N rotor rounds        (keyed shifts + layout offsets)
-4. Diffusion             (keyed 68-position transposition)
-5. Scramble              (unused layouts, keyed shifts)
-6. Plugboard inverse
-7. Steckerbrett out      (symmetric swap)
-8. Position whitening    (LCG-derived offset, unique per position)
+
+Decryption reverses those operations in reverse order.
+
+Two implementation details are easy to miss:
+
+- characters outside the built-in alphabet pass through unchanged and do not
+  advance the rotor register
+- the browser UI and module API expect ciphertext to include the embedded
+  checksum, so decryption strips the checksum first and verifies it afterward
+
+## Position Whitening
+
+Position whitening was added to break the old periodicity leak caused by the
+step mask repeating modulo the alphabet length.
+
+The whitening stream uses a key-derived 32-bit LCG:
+
+```text
+state_0 = keySum XOR 0xC0FFEE42
+state_n+1 = (state_n * 1664525 + 1013904223) mod 2^32
 ```
 
-Decryption reverses every operation in reverse order.
+For encryption, `state mod 95` is added to the final symbol index. Decryption
+subtracts the same offset first.
 
+This gives every processed position a unique offset and breaks the old
+modulo-period correlation.
 
+## The RC.2 Checksum
+
+`rc.2` uses a 64-bit checksum rendered as 10 base-95 characters.
+
+At a high level:
+
+1. Hash `plaintext + "|" + keyStr + "|chk64"` with 64-bit FNV-1a over UTF-8
+   bytes.
+2. Advance a 64-bit LCG ten times, xoring the loop index into the state before
+   each step.
+3. Emit one alphabet character per step via `state mod 95`.
+4. Insert those 10 characters at a key-derived position inside the ciphertext.
+
+The checksum position is still derived from a 32-bit FNV-1a hash of
+`keyStr + "chkpos"`.
+
+This is stronger than the old 4-character checksum, but it is still not the
+same thing as researched authenticated encryption.
 
 ## Statistical Profile
 
-A good cipher should produce output statistically indistinguishable from random noise. The primary measure of this is the **Index of Coincidence (IoC)**:
+The live IoC floor is:
 
+```text
+1 / 95 ~= 0.01053
 ```
-IoC = sum(f(c) * (f(c) - 1)) / (L * (L - 1))
-```
 
-For a 68symbol alphabet, the theoretical random floor is 1/68 ≈ 0.0147. English plaintext has an IoC around 0.065. Naval Enigma ciphertext typically showed IoC around 0.0480.052.
+Very short ciphertexts can legitimately show `0.000000` IoC if no in-alphabet
+character repeats. That is expected behavior, not automatically a bug.
 
-ENIGMAK ciphertext consistently lands between 0.015 and 0.042 depending on message length and content  indistinguishable from uniform random noise on messages of any practical length.
-
-Additional tests run on sample ciphertexts:
- Difference stream IoC (D1, D2): at or below random floor
- Autocorrelation: no detectable period
- Serial correlation: within expected random confidence interval
- Chisquare vs uniform: consistent with random distribution
-
-
+On longer messages, ciphertext should sit near the random floor rather than
+near natural-language plaintext.
 
 ## Keyspace
 
-At maximum configuration (34 steck pairs, 13 rotors, all 10 layouts, U=999):
+At maximum configuration, ENIGMAK's current keyspace is approximately:
 
-```
-~4.929 x 10^98 possible keys (98 digits, ~325 bits)
-```
-
-For comparison, AES256 has a keyspace of 2^256 ≈ 1.16 x 10^77. ENIGMAK's maximum keyspace exceeds AES256 by approximately 10^21.
-
-Brute force at one quadrillion attempts per second would take approximately 10^75 universe ages.
-
-
-
-## Community Testing: Two Weaknesses Found and Fixed
-
-After publishing ENIGMAK to r/cryptography, a community member identified two real cryptographic weaknesses. Both are documented here along with the fixes.
-
-### Weakness 1: PositionMod68 Periodicity Leak
-
-**The finding:**
-
-Encrypting 50,000 identical characters and bucketing the ciphertext by position modulo 68 reveals that different bucket positions have measurably different output distributions. The average L1 distance between bucket distributions was ~0.025, when a truly random stream would show ~0.245.
-
-The test code:
-
-```python
-from enigmak import process, parse_key, generate_key
-from collections import Counter
-
-key = generate_key()
-k = parse_key(key)
-pt = "A" * 50000
-ct = process(pt, k["steck_pairs"], k["rotors"], k["enabled"], k["user_rounds"], k["nonce"])
-
-buckets = [Counter() for _ in range(68)]
-for i, c in enumerate(ct):
-    buckets[i % 68][c] += 1
+```text
+4.528 x 10^128
 ```
 
-**Why it happened:**
+That is about `427` bits.
 
-The step mask `stepMask[ci % 68]` cycles with period 68. Position 0 and position 68 always check the same mask entry, meaning the rotor advances identically at both positions. Over a long repeated-plaintext message, this creates correlated rotor states at the same mod68 offset across cycles  and different rotor states produce different output distributions.
+This figure includes:
 
-A secondary finding showed that the deviation of each bucket from the global distribution correlated with the internal step mask at approximately 67% accuracy, meaning the step mask itself was partially recoverable under chosen-plaintext conditions.
+- ordered enabled-layout selection
+- rotor layout / position choices
+- up to 47 stecker pairs
+- the `1-999` user-round input
+- the optional built-in 3-character nonce space
 
-**Important note:** This is a chosen-plaintext attack. "No legitimate message would be 50,000 identical characters" is not a valid defense  chosen-plaintext is a standard adversarial model and the cipher must hold under it.
+## Historical Weaknesses And Fixes
 
-**The fix:**
+The following issues were identified by community review and addressed before
+or during the current branch:
 
-A position whitening layer was added as the final step of encryption (and first step of decryption). For each character, an LCG (Linear Congruential Generator) advances from a key-derived seed and adds a unique offset to the output:
+- fixed-layout substitution bias was removed by keyed layout permutations
+- position-mod-N leakage was reduced by the whitening layer
+- the monocharacter oracle was addressed by rotor-state feedback in the
+  position offsets
+- word-boundary leakage from plaintext spaces was removed in `rc.2`
 
-```python
-# Encryption: add LCG offset
-wstate = lcg(wstate)
-x = ALPHA[(ALPHA.index(x) + wstate % N) % N]
+## Known Remaining Limits
 
-# Decryption: subtract same LCG offset
-wstate = lcg(wstate)
-x = ALPHA[(ALPHA.index(x) - wstate % N) % N]
-```
-
-The LCG seed is derived from key material (`keySum XOR 0xC0FFEE42`) and has a period of 2^32  far beyond any practical message length. Since no two positions share the same LCG state, the mod68 correlation is completely broken.
-
-**Result after fix:** L1 distance ~0.42 (above the random baseline of 0.245  more uniform than pure random, which is ideal).
-
-
-
-### Weakness 2: Keyboard Layout Bias
-
-**The finding:**
-
-The ten keyboard layouts used as substitution tables in v1.0.0 were fixed  identical for every key. This created two problems:
-
-1. Only 27 of 68 characters had explicit mappings. Digits and special characters passed through these layers unchanged.
-2. The QWERTY layout (being the reference layout) mapped every character to itself  it was effectively doing nothing as a substitution table.
-3. The same substitution was applied regardless of key, meaning the layout layer added no key-dependent complexity.
-
-**The fix:**
-
-The fixed keyboard layout wirings were replaced with key-derived bijective permutations. For each of the 10 layouts, a FisherYates shuffle seeded uniquely from key material generates a random permutation of all 68 characters:
-
-```python
-for li, name in enumerate(LAYOUT_NAMES):
-    perm = list(range(N))
-    seed = (key_sum ^ (li * 0x9E3779B9 + 0xABCD1234)) & 0xFFFFFFFF
-    v = seed
-    for i in range(N - 1, 0, -1):
-        v = lcg(v)
-        j = v % (i + 1)
-        perm[i], perm[j] = perm[j], perm[i]
-    layout_maps[name] = {ALPHA[i]: ALPHA[perm[i]] for i in range(N)}
-```
-
-Each layout now:
- Covers all 68 characters (true bijection)
- Produces different substitutions for every key
- Has independent, non-correlated mappings from the other layouts
-
-**Verification:** A dedicated bias checker (`layout_bias_check.py`) confirms all 10 layout maps are bijective, frequency-uniform, cross-key independent, and inter-layout independent. The old v1.0.0 wirings fail the same tests.
-
-
-
-## Known Remaining Limitations
-
- **Not formally audited.** ENIGMAK has not undergone professional cryptanalytic review.
- **Meetinthemiddle.** A theoretical MITM attack may be possible if the diffusion and scramble layers are insufficiently non-linear. Unconfirmed.
- **Key reuse.** Reusing a key across messages creates correlated ciphertext. Always generate a fresh key per session.
- **Browser environment.** Running in a browser exposes the implementation to extensions, memory access, and other vectors not present in dedicated hardware.
-
-
+- Non-ASCII / Unicode is still passthrough in `rc.2`.
+- ENIGMAK has not undergone a formal audit.
+- Key reuse remains a bad idea.
+- Browser execution is less trustworthy than dedicated native or hardware
+  environments.
+- Authenticated encryption and stronger protocol framing are still future work.
 
 ## Implementations
 
- `enigmak.html`  browser-based machine, runs fully offline
- `enigmak.py`  Python CLI (`encrypt`, `decrypt`, `keygen`, `ioc`)
- `enigmak.js`  JavaScript module for Node.js and browser
+The repository currently ships:
 
-All three implementations are cryptographically identical and produce compatible output.
+- `enigmak.html` - primary browser machine
+- `docs/index.html` - mirrored browser copy for publishing
+- `enigmak.js` - JavaScript module
+- `python/enigmak.py` - Python CLI
+- `electron/` - Electron desktop wrapper around the same machine UI
 
-
-
-## License
-
-MIT License. Copyright (c) 2026 Erik Lindholm.
-
-Not formally audited. Do not use for classified, medical, legal, or life-critical communications.
+The JS module, Python CLI, and browser implementation are intended to produce
+compatible ciphertext for the same key and message.

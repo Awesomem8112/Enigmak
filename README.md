@@ -1,93 +1,126 @@
 # ENIGMAK
 
-A custom multi-round substitution-permutation rotor cipher with a 68-symbol alphabet.
+ENIGMAK is a custom multi-round substitution-permutation rotor cipher with a
+95-symbol ASCII alphabet.
 
-## ⚠️ Security Disclaimer
+## Security Disclaimer
 
-ENIGMAK has **not** undergone formal cryptanalytic review. Do not use it for classified, medical, legal, financial, or life-critical communications. For those purposes, use AES-256 or another formally audited standard. ENIGMAK is provided for educational, research, and general personal use.
+ENIGMAK has not undergone formal cryptanalytic review. Do not use it for
+classified, medical, legal, financial, or life-critical communications. For
+those purposes, use AES-256 or another formally audited standard.
 
-## What is ENIGMAK?
+## Current Protocol Snapshot
 
-ENIGMAK is a browser-based cipher machine inspired by the historical Enigma rotor machine but built on a fundamentally different and significantly stronger architecture. It runs entirely offline as a single HTML file - no installation, no server, no network requests.
+The current `v3.0.0-rc.2` branch encrypts over a 95-symbol alphabet:
+
+- `A-Z`
+- `a-z`
+- digits `0-9`
+- punctuation from the built-in alphabet
+- literal space
+
+This fixes the old word-boundary leak because spaces now move through the
+cipher pipeline like any other symbol.
 
 ## Features
 
-- **68-symbol alphabet** - A–Z, digits, semicolon, and all standard special characters
-- **1–13 rotors** with irregular key-derived stepping (47/68 mask)
-- **Steckerbrett** - up to 34 symmetric character-pair swaps
-- **Dynamic plugboard/scramble** from unused keyboard layouts
-- **10 keyboard layouts** as substitution tables (QWERTY, Colemak, Colemak-DH, Dvorak, Workman, Norman, Asset, Halmak, AZERTY, QWERTZ)
-- **Key-derived rounds** - 1–999 via `((S + R + L + U) mod 999) + 1`
-- **Diffusion layer** - keyed 68-position transposition
-- **Nonce** - prevents identical plaintexts producing identical ciphertexts
-- **Message authentication** - key-derived checksum embedded at key-derived position
-- **Key fingerprint** - 4-character verbal verification code
-- **Passphrase encoding** - word-based key representation
-- **ASCII only** - supports the 68-symbol ASCII alphabet. Non-ASCII characters (Cyrillic, Chinese, accented Latin, etc.) pass through unencrypted.
-- **Live IoC display** - real-time statistical quality indicator
-- **Decrypt mode warning** - full-screen amber tint
-- **Fully offline** - single HTML file, no dependencies
+- **95-symbol alphabet** - uppercase, lowercase, digits, punctuation, and
+  space are all first-class cipher symbols.
+- **1-13 rotors** - irregular key-derived stepping with a `66/95` mask.
+- **Steckerbrett** - up to 47 symmetric character-pair swaps.
+- **10 keyed layout permutations** - layout names act as stable labels for
+  independent key-derived permutations of the full alphabet.
+- **Key-derived rounds** - `1-999` rounds via `((S + R + L + U) mod 999) + 1`.
+- **Diffusion layer** - keyed 95-position transposition.
+- **Rotor-state feedback** - per-character offsets depend on the live rotor
+  state as well as position and key material.
+- **Position whitening** - a key-derived LCG offset is applied per position.
+- **Nonce support** - built-in generators emit a 3-character nonce.
+- **64-bit checksum** - ciphertext carries a 64-bit keyed checksum encoded as
+  10 base-95 characters at a key-derived position.
+- **Key fingerprint** - 4-character verbal verification code.
+- **Passphrase encoding** - word-based rendering of numeric-space key strings.
+- **Fully offline** - browser file, Python CLI, and JS module work with no
+  network dependency.
 
 ## Keyspace
 
-~4.929 × 10⁹⁸ (98-digit number) at maximum configuration.
+Maximum configuration is approximately `4.528 x 10^128` possible keys, or
+about `427` bits.
 
 ## Quick Start
 
-1. Download `enigmak.html`
-2. Open it in any modern browser
-3. No installation required - works fully offline
-
-## GitHub.io
-
-See the [GitHub.io](https://awesomem8112.github.io/Enigmak/) site to see how Enigmak works before downloading.
+1. Open `enigmak.html` in a modern browser, or use the Python / JS modules.
+2. Generate or import a key.
+3. Encrypt plaintext to produce ciphertext with an embedded 10-character
+   checksum.
+4. Share the nonce alongside the ciphertext when one is present.
 
 ## Desktop App
 
-See the [Electron wrapper](electron/) for a standalone desktop application (Windows, macOS, Linux).
+See [electron/](electron/) for the Electron wrapper. The desktop build ships
+the same machine UI as the root `enigmak.html`.
 
-Before building, run `npm audit` inside the `electron/` folder to check for supply chain vulnerabilities. The cipher files (`enigmak.html`, `enigmak.py`, `enigmak.js`) have zero npm dependencies and are safe to use directly with no install step required.
+Before building, run `npm audit` inside `electron/` to check the desktop
+wrapper's dependency tree. The cipher implementations themselves
+(`enigmak.html`, `enigmak.js`, `python/enigmak.py`) do not depend on npm.
 
 ## Architecture
 
-```
 Per-character encryption pipeline:
-1. Steckerbrett in       (symmetric swap)
-2. Plugboard forward     (unused layouts)
-3. N rotor rounds        (keyed shifts + layout offsets)
-4. Diffusion             (keyed 68-position transposition)
-5. Scramble              (unused layouts, keyed shifts)
-6. Plugboard inverse
-7. Steckerbrett out      (symmetric swap)
+
+```text
+1. Steckerbrett in
+2. Plugboard forward (unused keyed layouts)
+3. N rotor rounds
+4. Diffusion
+5. Scramble (unused keyed layouts with shifts)
+6. Plugboard forward again
+7. Steckerbrett out
+8. Position whitening
 ```
 
-**No reflector** - a character can encrypt to itself. No periodic structure.
+Decryption reverses the same operations in reverse order. Before decryption,
+the implementation removes the 10-character checksum from its key-derived
+position and verifies it after plaintext recovery.
+
+There is no reflector. A character may encrypt to itself depending on state.
 
 ## Key Format
 
-Space-separated numeric format:
-```
+Keys use the numeric-space format:
+
+```text
 [enabled] [rotors] [steck] [U] [nonce?]
 ```
 
-- `enabled` - layout digit indices concatenated
-- `rotors` - 1-digit layout + 2-digit position per rotor
-- `steck` - 4-digit pairs (2+2 char indices), `0` if none
-- `U` - 3-digit base round count (001–999)
-- `nonce` - 3 characters, each encoded as 2-digit char index (6 digits total, optional)
+- `enabled` - distinct layout digit indices concatenated in order
+- `rotors` - repeated `{layoutDigit}{position2digits}` triples
+- `steck` - repeated `{lo2digits}{hi2digits}` pairs, or `0`
+- `U` - 3-digit base round count
+- `nonce` - optional 2-digit alphabet indices concatenated
+
+Built-in tools currently generate a 3-character nonce.
 
 ## Security Notes
 
-- Never reuse a key across multiple messages
-- Never transmit a key through the same channel as ciphertext
-- Use the nonce for every message
-- The keyboard layouts serving as rotor wirings are publicly known — all security rests on the key
-- Formal cryptanalytic review has not been completed
+- Generate a fresh key for each message or session.
+- Use the nonce every time you encrypt a message.
+- Never transmit keys through the same channel as ciphertext.
+- Verify the key fingerprint verbally before use.
+- The checksum helps detect wrong-key and corruption cases, but it is not a
+  replacement for researched authenticated encryption.
+- Non-ASCII / Unicode characters still pass through unchanged in `rc.2`.
 
-## License
+## GitHub Pages
 
-MIT License - see [LICENSE](LICENSE)
+The mirrored browser copy lives in [docs/index.html](docs/index.html).
 
 ## Contributing
 
-Cryptanalytic review, implementation audits, and formal specification contributions are welcome. Please open an issue before submitting large changes.
+Cryptanalytic review, implementation audits, specification improvements, and
+test-suite contributions are welcome.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

@@ -1,63 +1,85 @@
 # Test Vectors
 
-These known plaintext/ciphertext pairs allow implementers to verify correctness
-against the v2.0.0 cipher implementation.
+These plaintext / ciphertext pairs target the current `v3.0.0-rc.2`
+implementation.
 
-All vectors use the 68-character alphabet:
-`ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\',./'!@#$%^&*()_+{}|:"<>?`~`
+All vectors below use the live 95-symbol alphabet:
 
-The ciphertext values below include the 4-character checksum embedded at the
-key-derived position. Strip the checksum before decrypting.
+```text
+ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\',./!@#$%^&*()_+{}|:"<>?`~abcdefghijklmnopqrstuvwxyz[space]
+```
 
----
+The ciphertext values below already include the embedded checksum. In `rc.2`
+that checksum is:
+
+- 64-bit
+- encoded as 10 base-95 characters
+- inserted at a key-derived position
 
 ## Vector 1
 
-**Key:** `01 002103 0 013`
-**Plaintext:** `HELLOWORLD`
-**Ciphertext (with checksum):** `ON>}O!41"U},?I`
-**Checksum position:** 0
-**Note:** QWERTY and Colemak enabled. 2 rotors. No steck pairs. No nonce.
+**Key:** `01 002103 0 013`  
+**Plaintext:** `HELLOWORLD`  
+**Ciphertext (with checksum):** `igmI{^8|?vR0W,lWpGzx`  
+**Checksum position:** `0`  
+**Notes:** Minimal uppercase-only regression vector. No steck pairs. No nonce.
 
----
+## Vector 2
 
-## Vector 2 - Special characters
+**Key:** `123 100200 0 050`  
+**Plaintext:** `Hello World`  
+**Ciphertext (with checksum):** `b$\.:j53ZHekRX~u.I#%)`  
+**Checksum position:** `9`  
+**Notes:** Exercises lowercase preservation and encrypted space handling.
 
-**Key:** `123 100200 0 050`
-**Plaintext:** `TEST1TEST2TEST3`
-**Ciphertext (with checksum):** `&E1R2=ZG*QPS6I~<(B5`
-**Checksum position:** 8
-**Note:** Tests digit and letter mixing. Colemak, Colemak-DH, Dvorak enabled.
+## Vector 3
 
----
+**Key:** `0538 556031042 2571315441866775 013 412715`  
+**Plaintext:** `Hello there General Kenobi`  
+**Ciphertext (with checksum):** ``oP1[(&v}3J'l=:!}g/e[vuNr'y%g`G+"bNdT``  
+**Checksum position:** `19`  
+**Notes:** Exercises lowercase, multiple spaces, steck pairs, and nonce use.
 
-## Vector 3 - Full alphabet stress
+## Vector 4
 
-**Key:** `5197 532907956112537115750740926542 0032016302350359042305310664071708410915105511141237135016391866194820542136224424422543264927452829303433573856406246534767516152586065 041 535917`
-**Plaintext:** `TEST1TEST2TEST3TEST4TEST5TEST6TEST7TEST8TEST9TEST10`
-**Ciphertext (with checksum):** `` `>?R:TMJS7FK6|)O2ZV>&U;IL2(.8O?N8(M7$G9~+N}G]9=Q4M;<{>, ``
-**Checksum position:** 12
-**Note:** 34 steck pairs, 10 rotors, nonce active. Maximum configuration stress test.
-
----
+**Key:** `1234056789 100201302403004505606707808909110211312 00800181028203830484058506860787088809891090119112921393149415751676177718781979206021612262236324642565266627672868296930703171327233733474355536563757385839594054415342524351445045494648 326 934460`  
+**Plaintext:** `Hello World`  
+**Ciphertext (with checksum):** ``{/lyID`=zrW,jH0i7L'x\``  
+**Checksum position:** `5`  
+**Notes:** Large-key regression vector used during `rc.2` validation.
 
 ## Generating Vectors
 
-Run from the `python/` folder:
+Python:
 
 ```bash
-python enigmak.py encrypt "PLAINTEXT" "KEY STRING"
+python python/enigmak.py encrypt "PLAINTEXT" "KEY STRING"
 ```
 
-Or load `enigmak.html` in a browser, configure the key, encrypt the plaintext,
-and record the full output including checksum.
+JavaScript:
 
-## Verification
+```bash
+node -e "const m=require('./enigmak.js'); console.log(m.encrypt('PLAINTEXT','KEY STRING'))"
+```
 
-A correct v2.0.0 implementation of ENIGMAK must:
+Browser:
 
-1. Produce identical ciphertext for identical plaintext + key + nonce
-2. Decrypt its own output back to the original plaintext
-3. Strip exactly 4 checksum characters from the key-derived position before decrypting
-4. Produce IoC close to 0.0147 (the 1/68 floor) on sufficiently long ciphertexts
-5. Pass all five tests in `python/layout_bias_check.py`
+1. Open `enigmak.html`.
+2. Import or construct the key.
+3. Encrypt the plaintext.
+4. Record the full ciphertext including the embedded checksum.
+
+## Verification Checklist
+
+A correct `v3.0.0-rc.2` implementation must:
+
+1. Produce the exact ciphertext above for the same plaintext and key.
+2. Remove exactly 10 checksum characters from the key-derived position before
+   decryption.
+3. Recover the original plaintext and report checksum verification success.
+4. Preserve lowercase and spaces in recovered plaintext.
+5. Produce ciphertext IoC near the `1/95 ~= 0.01053` floor on sufficiently long
+   random-looking outputs.
+
+Short ciphertexts may legitimately show `0.000000` IoC if no in-alphabet
+character repeats.
