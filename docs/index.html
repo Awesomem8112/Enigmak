@@ -240,7 +240,7 @@ function secureRandInt(max) {
 <body>
 <header>
   <div class="logo">ENIGMAK</div>
-  <div class="tagline">Irregular stepping · diffusion · keyed layouts · 68-symbol alphabet</div>
+  <div class="tagline">Irregular stepping · diffusion · keyed layouts · 95-symbol alphabet</div>
 </header>
 
 <div class="machine">
@@ -285,7 +285,7 @@ function secureRandInt(max) {
       <div class="steck-cables" id="steck-cables">
         <span class="steck-hint">No cables connected - click two letters to pair them</span>
       </div>
-      <div class="steck-hint" id="steck-count">0 / 34 pairs used</div>
+      <div class="steck-hint" id="steck-count">0 / 47 pairs used</div>
     </div>
   </div>
 
@@ -304,9 +304,6 @@ function secureRandInt(max) {
   <div class="io">
     <div class="io-panel">
       <div class="io-label" id="lbl-in">Plaintext</div>
-      <div id="case-warning" style="display:none;font-size:0.65rem;color:var(--amber);margin-bottom:4px;padding:4px 8px;border:1px solid var(--amber);border-radius:3px;">
-  ⚠ Lowercase letters are folded to uppercase. Case-sensitive content (e.g. URLs, passwords) will not decrypt identically.
-</div>
 <textarea id="input" placeholder="Type your message..." oninput="onInput()"></textarea>
     </div>
     <div class="io-panel">
@@ -388,8 +385,10 @@ function secureRandInt(max) {
 const QWERTY_TOP  = 'QWERTYUIOP';
 const QWERTY_HOME = 'ASDFGHJKL;';
 const QWERTY_BOT  = 'ZXCVBNM';
-const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./!@#$%^&*()_+{}|:"<>?`~';
-const N = ALPHA.length; // 68
+const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./!@#$%^&*()_+{}|:"<>?`~abcdefghijklmnopqrstuvwxyz ';
+const N = ALPHA.length; // 95
+const MAX_STECK_PAIRS = Math.floor(N / 2);
+const STEP_MASK_ACTIVE = 66;
 
 const LAYOUT_DEFS = {
   'QWERTY':      { top:'QWERTYUIOP', home:'ASDFGHJKL;', bot:'ZXCVBNM' },
@@ -444,14 +443,14 @@ function computeKeyMaterial() {
   const rounds = ((S + R + L + userRounds) % 999) + 1;
   const keySum = ((S * 31 + R * 17 + L * 13) >>> 0);
 
-  // Irregular step mask: 47/68 positions advance rotors
+  // Irregular step mask: ~69% of positions advance rotors
   const stepPos = [...Array(N).keys()];
   let v = (keySum ^ 0x5A5A5A5A) >>> 0;
   for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[stepPos[i],stepPos[j]]=[stepPos[j],stepPos[i]];}
   const stepMask = new Array(N).fill(false);
-  stepPos.slice(0,47).forEach(p=>stepMask[p]=true); // 47/68 ≈ 70%
+  stepPos.slice(0,STEP_MASK_ACTIVE).forEach(p=>stepMask[p]=true); // 66/95 ≈ 69%
 
-  // Diffusion layer: keyed 68-position transposition
+  // Diffusion layer: keyed 95-position transposition
   const transPerm = [...Array(N).keys()];
   v = (keySum ^ 0xDEAD1234) >>> 0;
   for (let i=N-1;i>0;i--){v=((Math.imul(v,1664525)+1013904223)>>>0);const j=v%(i+1);[transPerm[i],transPerm[j]]=[transPerm[j],transPerm[i]];}
@@ -505,7 +504,7 @@ function rotorShift(rs) {
 function applyNonce(baseRotors, nonceStr) {
   if (!nonceStr) return baseRotors;
   return baseRotors.map((r,i) => {
-    const off = i < nonceStr.length ? ALPHA.indexOf(nonceStr[i].toUpperCase()) : 0;
+    const off = i < nonceStr.length ? ALPHA.indexOf(nonceStr[i]) : 0;
     return {...r, pos: (r.pos + (off<0?0:off)) % N};
   });
 }
@@ -528,6 +527,14 @@ function applyLayout(char, layoutName, shift, invert, lm, ilm) {
 let steckPairs = []; // array of [a, b]
 let steckPending = null; // letter waiting for a partner
 
+function displayChar(char) {
+  return char === ' ' ? '[sp]' : char;
+}
+
+function displayText(text) {
+  return text ? [...text].map(displayChar).join('') : '-';
+}
+
 function steckMap() {
   const m = {};
   for (const c of ALPHA) m[c] = c;
@@ -549,8 +556,8 @@ function buildSteckBoard() {
     const pair = steckPairs.find(p => p[0]===c || p[1]===c);
     const partner = pair ? (pair[0]===c ? pair[1] : pair[0]) : null;
     btn.className = 'steck-key' + (isSelected?' selected':isPaired?' paired':'');
-    btn.textContent = c;
-    if (partner) btn.innerHTML = c + `<span class="steck-badge">${partner}</span>`;
+    btn.textContent = displayChar(c);
+    if (partner) btn.innerHTML = displayChar(c) + `<span class="steck-badge">${displayChar(partner)}</span>`;
     btn.onclick = () => onSteckClick(c);
     alpha.appendChild(btn);
   });
@@ -564,14 +571,14 @@ function buildSteckBoard() {
       const cable = document.createElement('div');
       cable.className = 'steck-cable';
       cable.title = 'Click to remove';
-      cable.innerHTML = `${a} <span class="cable-x">⇄</span> ${b} <span class="cable-x">✕</span>`;
+      cable.innerHTML = `${displayChar(a)} <span class="cable-x">⇄</span> ${displayChar(b)} <span class="cable-x">✕</span>`;
       cable.onclick = () => { steckPairs = steckPairs.filter(p=>!(p[0]===a&&p[1]===b)); steckPending=null; buildSteckBoard(); recompute(); };
       cablesEl.appendChild(cable);
     });
   }
 
   const countEl = document.getElementById('steck-count');
-  countEl.textContent = `${steckPairs.length} / 34 pairs used${steckPending ? ` · Waiting for partner of ${steckPending} - click another character` : ''}`;
+  countEl.textContent = `${steckPairs.length} / ${MAX_STECK_PAIRS} pairs used${steckPending ? ` · Waiting for partner of ${displayChar(steckPending)} - click another character` : ''}`;
 }
 
 function onSteckClick(c) {
@@ -582,7 +589,7 @@ function onSteckClick(c) {
       steckPairs = steckPairs.filter(p => p[0]!==c && p[1]!==c);
       buildSteckBoard(); recompute(); return;
     }
-    if (steckPairs.length >= 34) return;
+    if (steckPairs.length >= MAX_STECK_PAIRS) return;
     steckPending = c;
   } else {
     if (c === steckPending) { steckPending = null; buildSteckBoard(); return; } // deselect
@@ -621,12 +628,8 @@ function processAll(str, startRotors, _unused_rds, dec) {
   let wstate = km.whiteningState;
 
   for (const c of str) {
-    // 68-char alphabet: fold lowercase a-z to uppercase before processing
-    // (lowercase letters are not in the alphabet; this allows natural typing)
-    const upper = (c >= 'a' && c <= 'z') ? c.toUpperCase() : c;
-    const isAlpha = ALPHA.includes(upper);
-    const isLower = false;
-    if (!isAlpha) { chars.push({char:c,passthrough:true,out:c,rs:[...rs]}); result+=c; continue; }
+    if (!ALPHA.includes(c)) { chars.push({char:c,passthrough:true,out:c,rs:[...rs]}); result+=c; continue; }
+    const upper = c;
 
     const startShift = rotorShift(rs);
     const stepLayouts = [], stepShifts = [];
@@ -726,7 +729,7 @@ function buildRotorSlots() {
   rotors.forEach((r, ri) => {
     const wrap = document.createElement('div'); wrap.className='rotor-slot';
     const box = document.createElement('div'); box.className='rotor-box assigned'; box.id='rbox-'+ri;
-    box.innerHTML = `<span class="r-num">R${ri+1}</span><span class="r-name">${r.layout}</span><span class="r-pos">${ALPHA[r.pos]}</span><button class="del-rotor-btn" onclick="removeRotor(event,${ri})">×</button>`;
+    box.innerHTML = `<span class="r-num">R${ri+1}</span><span class="r-name">${r.layout}</span><span class="r-pos">${displayChar(ALPHA[r.pos])}</span><button class="del-rotor-btn" onclick="removeRotor(event,${ri})">×</button>`;
     box.onclick = (e) => { if(!e.target.classList.contains('del-rotor-btn')) cycleRotorLayout(ri); };
 
     const ctrl = document.createElement('div'); ctrl.className='rotor-ctrl';
@@ -817,14 +820,8 @@ function recompute() {
   if (visActiveIdx >= 0) renderVisCard(visActiveIdx);
 }
 
-function onInput() { recompute(); updateCaseWarning(); }
+function onInput() { recompute(); }
 
-function updateCaseWarning() {
-  const input = document.getElementById('input').value;
-  const hasLower = /[a-z]/.test(input);
-  const warnEl = document.getElementById('case-warning');
-  if (warnEl) warnEl.style.display = hasLower ? 'block' : 'none';
-}
 function onUserRounds() {
   userRounds = parseInt(document.getElementById('rounds-slider').value);
   document.getElementById('rounds-slider-val').textContent = userRounds;
@@ -834,7 +831,7 @@ function onUserRounds() {
 // Nonce functions
 function generateNonce() {
   nonce = Array.from({length:3}, () => ALPHA[secureRandInt(N)]).join('');
-  document.getElementById('nonce-val').textContent = nonce;
+  document.getElementById('nonce-val').textContent = displayText(nonce);
   recompute();
 }
 function clearNonce() {
@@ -845,7 +842,7 @@ function clearNonce() {
 
 // Live IoC
 function calcIoC(text) {
-  const t = text.toUpperCase();
+  const t = text;
   const freq = {};
   for (const c of ALPHA) freq[c] = 0;
   for (const c of t) if (freq[c] !== undefined) freq[c]++;
@@ -859,18 +856,19 @@ function calcIoC(text) {
 // Key strength in bits
 function calcKeyStrengthBits() {
   const k = steckPairs.length;
-  // Steck: C(68,2k) * (2k-1)!! / k! for k pairs from 68 chars
+  // Steck: C(N,2k) * (2k-1)!! / k! for k pairs from the full alphabet
   let steckBits = 0;
-  for (let i=68-2*k+1; i<=68; i++) steckBits += Math.log2(i);
+  for (let i=N-2*k+1; i<=N; i++) steckBits += Math.log2(i);
   steckBits -= k; // divide by 2^k (pair order doesn't matter)
   for (let i=2; i<=k; i++) steckBits -= Math.log2(i);
-  // Rotors: each from 10 layouts * 68 positions = 680 options
-  const rotorBits = rotors.length * Math.log2(680);
+  // Rotors: each from 10 layouts * N positions
+  const rotorBits = rotors.length * Math.log2(10 * N);
   let layoutBits = 0;
   const en = [...enabledLayouts].length;
   for (let i=0; i<en; i++) layoutBits += Math.log2(10-i);
   const roundsBits = Math.log2(999);
-  return Math.round(steckBits + rotorBits + layoutBits + roundsBits);
+  const nonceBits = nonce ? 3 * Math.log2(N) : 0;
+  return Math.round(steckBits + rotorBits + layoutBits + roundsBits + nonceBits);
 }
 
 // ── Key encoding/decoding ────────────────────────────────────────────────────
@@ -900,7 +898,7 @@ function encodeKey() {
   const uStr = String(userRounds).padStart(3,'0');
   let key = [enabledStr, rotorStr, steckStr, uStr].join(' ');
   if (nonce) {
-    const nonceStr = [...nonce.toUpperCase()].map(c => {
+    const nonceStr = [...nonce].map(c => {
       const i = ALPHA.indexOf(c);
       return i >= 0 ? String(i).padStart(2,'0') : '';
     }).filter(s=>s).join('');
@@ -912,7 +910,7 @@ function encodeKey() {
 function decodeKey(key) {
   // Detect legacy format (contains dot separator)
   if (key.includes('.')) {
-    throw new Error('Legacy key format detected - keys must be regenerated for the 68-character alphabet');
+    throw new Error('Legacy key format detected - keys must be regenerated for the 95-character alphabet');
   }
   const parts = key.trim().split(/\s+/);
   if (parts.length < 4 || parts.length > 5) throw new Error('Expected 4 or 5 space-separated sections');
@@ -959,7 +957,7 @@ function decodeKey(key) {
       usedIdx.add(ai); usedIdx.add(bi);
       newSteck.push([ALPHA[ai], ALPHA[bi]]);
     }
-    if (newSteck.length > 34) throw new Error('Section 3: max 34 steck pairs');
+    if (newSteck.length > MAX_STECK_PAIRS) throw new Error('Section 3: max ' + MAX_STECK_PAIRS + ' steck pairs');
   }
 
   // Decode U
@@ -991,12 +989,14 @@ function onKeyImport() {
     importedKeyData = decodeKey(val);
     const d = importedKeyData;
     input.className='key-import-input ok';
-    const nonceNote2 = d.newNonce ? ' · nonce ' + d.newNonce : ''; status.textContent = '✓ Valid - ' + d.newEnabled.length + ' layouts · ' + d.newRotors.length + ' rotor(s) · ' + d.newSteck.length + ' steck pair(s) · base rounds ' + (d.newU||13) + ' · 68-char alphabet' + nonceNote2;
+    const nonceNote2 = d.newNonce ? ' · nonce ' + displayText(d.newNonce) : '';
+    status.textContent = 'OK - ' + d.newEnabled.length + ' layouts · ' + d.newRotors.length + ' rotor(s) · ' + d.newSteck.length + ' steck pair(s) · base rounds ' + (d.newU || 13) + ' · 95-char alphabet' + (d.newNonce ? ' · nonce ' + displayText(d.newNonce) : '');
     status.className='key-status ok';
   } catch(e) {
     importedKeyData = null;
     input.className='key-import-input error';
     status.textContent = '✗ ' + e.message;
+    status.textContent = 'ERROR - ' + e.message;
     status.className='key-status err';
   }
 }
@@ -1017,12 +1017,13 @@ function applyImportedKey() {
 
   // Restore nonce if present in key
   nonce = newNonce || '';
-  document.getElementById('nonce-val').textContent = nonce || '-';
+  document.getElementById('nonce-val').textContent = displayText(nonce);
 
   document.getElementById('key-import').value = '';
   document.getElementById('key-import').className = 'key-import-input';
-  const nonceNote = nonce ? ' · nonce ' + nonce : '';
+  const nonceNote = nonce ? ' · nonce ' + displayText(nonce) : '';
   document.getElementById('key-status').textContent = '✓ Key loaded successfully' + nonceNote;
+  document.getElementById('key-status').textContent = 'OK - key loaded successfully' + nonceNote;
   document.getElementById('key-status').className = 'key-status ok';
   importedKeyData = null;
 
@@ -1060,8 +1061,8 @@ function updateKeyHint() {
   const key = encodeKey();
   document.getElementById('key-val').textContent = key;
   const km = computeKeyMaterial();
-  const rotorSummary = rotors.map(r=>r.layout[0]+ALPHA[r.pos]).join('-');
-  const nonceLabel = nonce ? nonce : '-';
+  const rotorSummary = rotors.map(r=>r.layout[0] + displayChar(ALPHA[r.pos])).join('-');
+  const nonceLabel = displayText(nonce);
   document.getElementById('key-hint').innerHTML =
     `<span style="color:var(--dim)">Rotors:</span> <span class="amb">${rotorSummary}</span> &nbsp;·&nbsp; `+
     `<span style="color:var(--dim)">Base:</span> <span class="amb">${userRounds}</span> &nbsp;`+
@@ -1076,7 +1077,7 @@ function updateKeyHint() {
     const ioc = calcIoC(outVal);
     if (ioc !== null) {
       const iocColor = ioc < 0.020 ? 'color:var(--green)' : ioc < 0.030 ? 'color:var(--amber)' : 'color:var(--red)';
-      iocEl.innerHTML = `<span style="color:var(--dim)">IoC:</span> <span style="${iocColor}">${ioc.toFixed(6)}</span> <span style="color:var(--dim)">(floor 0.014706)</span>`;
+      iocEl.innerHTML = `<span style="color:var(--dim)">IoC:</span> <span style="${iocColor}">${ioc.toFixed(6)}</span> <span style="color:var(--dim)">(floor ${(1 / N).toFixed(6)})</span>`;
     } else {
       iocEl.innerHTML = '';
     }
@@ -1109,7 +1110,7 @@ function updateKeyHint() {
     } else if (mode === 'enc' && outVal.length > CHECKSUM_LEN) {
       const chkPos = computeChecksumPos(encodeKey(), outVal.length);
       const chkDisplay = outVal.slice(chkPos, chkPos + CHECKSUM_LEN);
-      chkEl.innerHTML = `<span style="color:var(--dim)">Checksum:</span> <span style="color:var(--blue)">${chkDisplay}</span> <span style="color:var(--dim)">(position ${chkPos}, key-derived)</span>`;
+      chkEl.innerHTML = `<span style="color:var(--dim)">Checksum:</span> <span style="color:var(--blue)">${displayText(chkDisplay)}</span> <span style="color:var(--dim)">(position ${chkPos}, key-derived, 64-bit)</span>`;
     } else {
       chkEl.innerHTML = '';
     }
@@ -1164,7 +1165,7 @@ function buildCharRow() {
     if (c.passthrough) return;
     const pill = document.createElement('button');
     pill.className = 'vis-pill' + (i === visActiveIdx ? ' active' : i < visActiveIdx ? ' done' : '');
-    pill.textContent = c.char.toUpperCase();
+    pill.textContent = displayChar(c.char);
     pill.onclick = () => { visActiveIdx = i; buildCharRow(); renderVisCard(i); };
     row.appendChild(pill);
   });
@@ -1180,7 +1181,7 @@ function renderVisCard(idx) {
   const c = processedChars[idx];
   const dec = mode === 'dec';
   const inChar = c.upper;
-  const outChar = c.out.toUpperCase();
+  const outChar = c.out;
 
   // Build compact pipeline - just show key stages, not every round
   const steps = c.steps;
@@ -1214,19 +1215,19 @@ function renderVisCard(idx) {
   stageNames.forEach((name, i) => {
     const val = stageVals[i+1] || '?';
     const changed = val !== prev;
-    pipelineHtml += `<span class="vis-pnode${changed?' changed':''}">${name}: <b>${val}</b></span>`;
+    pipelineHtml += `<span class="vis-pnode${changed?' changed':''}">${name}: <b>${displayChar(val)}</b></span>`;
     if (i < stageNames.length-1) pipelineHtml += '<span class="vis-sep">›</span>';
     prev = val;
   });
 
   // Rotor state
-  const rotorState = c.rs.map((r,i) => `R${i+1}:${ALPHA[r.pos]}`).join(' ');
+  const rotorState = c.rs.map((r,i) => `R${i+1}:${displayChar(ALPHA[r.pos])}`).join(' ');
 
   card.innerHTML = `
     <div class="vis-transform">
-      <div class="vis-char-big in">${inChar}</div>
+      <div class="vis-char-big in">${displayChar(inChar)}</div>
       <div class="vis-arrow">→</div>
-      <div class="vis-char-big out">${outChar}</div>
+      <div class="vis-char-big out">${displayChar(outChar)}</div>
     </div>
     <div class="vis-row"><span>Position</span><span>#${idx+1}</span></div>
     <div class="vis-row"><span>Rotor state</span><span class="hi">${rotorState}</span></div>
@@ -1287,7 +1288,22 @@ function computeFingerprint() {
 }
 
 // ── Message authentication checksum ──────────────────────────────────────────
-const CHECKSUM_LEN = 4; // characters appended to ciphertext
+const CHECKSUM_LEN = 10; // base-95 encoding of a 64-bit checksum
+const U64_MASK = (1n << 64n) - 1n;
+
+function hashStr64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let h = 0xcbf29ce484222325n;
+  for (const b of bytes) {
+    h ^= BigInt(b);
+    h = (h * 0x100000001b3n) & U64_MASK;
+  }
+  return h;
+}
+
+function lcg64(v) {
+  return (v * 6364136223846793005n + 1442695040888963407n) & U64_MASK;
+}
 
 // ── Encrypted checksum helpers (reserved for v3.0.0) ────────────────────────────
 // These functions run checksum characters through the full cipher pipeline,
@@ -1356,12 +1372,11 @@ function computeChecksumPos(keyStr, totalLen) {
 }
 
 function computeChecksum(plaintext, keyStr) {
-  const h1 = hashStr(plaintext + '|' + keyStr + '|chk1');
-  const h2 = hashStr(plaintext + '|' + keyStr + '|chk2');
-  let out = '', v = h1 ^ (h2 << 16);
+  let out = '';
+  let v = hashStr64(plaintext + '|' + keyStr + '|chk64');
   for (let i = 0; i < CHECKSUM_LEN; i++) {
-    v = (Math.imul(v, 1664525) + 1013904223) >>> 0;
-    out += ALPHA[v % N]; // full 68-char alphabet - blends with cipher output
+    v = lcg64(v ^ BigInt(i));
+    out += ALPHA[Number(v % BigInt(N))]; // full 95-char alphabet - blends with cipher output
   }
   return out;
 }
