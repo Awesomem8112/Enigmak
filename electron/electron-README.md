@@ -1,64 +1,67 @@
-# ENIGMAK - Desktop App
+# ENIGMAK Desktop App
 
-Standalone offline desktop application wrapping the ENIGMAK cipher machine in Electron.
+This folder contains the Electron wrapper for the ENIGMAK machine.
 
 ## Requirements
 
-- Node.js 18 or later (https://nodejs.org)
-- npm (included with Node.js)
+- Node.js 18 or later
+- npm
 
-## Quick start (run without building)
+## Quick Start
 
 ```bash
 npm install
 npm start
 ```
 
-This opens ENIGMAK as a native desktop window. No browser needed, fully offline.
+This launches ENIGMAK as a native desktop window.
 
-## Build a distributable
+## Build Outputs
 
-### Windows (portable .exe - no installer needed)
+Windows portable executable:
+
 ```bash
 npm run build-win
 ```
-Output: `dist/ENIGMAK*.exe`
 
-### Linux (AppImage - runs on any distro)
+Linux AppImage:
+
 ```bash
 npm run build-linux
 ```
-Output: `dist/ENIGMAK*.AppImage`
 
-### macOS (dmg)
+macOS DMG:
+
 ```bash
 npm run build-mac
 ```
-Output: `dist/ENIGMAK*.dmg`
 
-## Features added by the desktop wrapper
+## What The Wrapper Adds
 
-- **File menu** - save ciphertext to .txt, load message from .txt
-- **Security menu** - clear clipboard, clear all fields + clipboard in one keystroke (Ctrl+Shift+Delete)
-- **Edit menu** - standard cut/copy/paste + clear all fields
-- **About dialog** - version and keyspace info
-- **Fully air-gappable** - no network requests, ever. All external navigation blocked.
-- **Native window** - zoom in/out, fullscreen, proper OS title bar
+- File menu actions for saving ciphertext and loading text files
+- standard edit actions
+- clipboard clearing shortcuts
+- a native About dialog
+- native window controls
+- blocked external navigation
 
 ## Structure
 
-```
-enigmak-electron/
-├── main.js          - Electron main process (window, menus, file I/O)
-├── package.json     - build config
-├── README.md        - this file
-└── src/
-    └── index.html   - the full ENIGMAK machine (unchanged)
+```text
+electron/
+  main.js
+  package.json
+  package-lock.json
+  src/index.html
 ```
 
-## Security notes
+`src/index.html` is the mirrored machine UI used by the desktop build. It is
+kept in sync with the root `enigmak.html`.
 
-- `nodeIntegration` is disabled - the cipher page has no access to Node.js APIs
-- `contextIsolation` and `sandbox` are enabled
-- All external navigation (links, window.open) is blocked at the app level
-- The app makes zero network requests
+## Security Notes
+
+- `nodeIntegration` is disabled
+- `contextIsolation` is enabled
+- `sandbox` is enabled
+- all external navigation is blocked
+- the app makes no network requests on its own
