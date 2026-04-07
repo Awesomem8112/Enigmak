@@ -27,7 +27,7 @@
 ## v3.0.0-rc.1 - Release Candidate 1 (not officially released)
 
 ### Breaking Change
-- Ciphertexts from v2.0.0 and earlier are not compatible with v3.0.0.
+- Ciphertexts from v2.0.0 and earlier are not compatible with v3.0.0-rc.1.
   The alphabet has been expanded from 68 to 94 symbols. All existing
   messages must be re-encrypted.
 
