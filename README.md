@@ -98,7 +98,7 @@ Keys use the numeric-space format:
 - `rotors` - repeated `{layoutDigit}{position2digits}` triples
 - `steck` - repeated `{lo2digits}{hi2digits}` pairs, or `0`
 - `U` - 3-digit base round count
-- `nonce` - optional 2-digit alphabet indices concatenated
+- `nonce` - optional 3-digit alphabet indices concatenated
 
 Built-in tools currently generate a 3-character nonce.
 
