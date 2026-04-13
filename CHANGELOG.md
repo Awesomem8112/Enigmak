@@ -19,7 +19,7 @@
   from the current key profile so repeated fixed-shape values no longer look
   mysterious.
 
-### Updates
+### Future Updates
 - Legacy unheaded `rc.2` ciphertext still decrypts through a fallback path.
 - Clipboard-corruption safeguards are now treated as a shipped cross-program
   feature across HTML, JS, Python, docs, and Electron.
