@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v3.0.0-rc.2 - Command-line cipher machine
+ENIGMAK v3.0.0-rc.3 - Command-line cipher machine
 95-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -8,6 +8,7 @@ Usage:
     python enigmak.py decrypt "CIPHERTEXT"  "KEY STRING"
     python enigmak.py keygen
     python enigmak.py ioc "CIPHERTEXT"
+    python enigmak.py keystrength "KEY STRING"
 
 See README.md and SPECIFICATION.md for full details.
 """
@@ -24,7 +25,23 @@ N = len(ALPHA)  # 95
 assert N == 95
 STEP_MASK_ACTIVE = 66
 CHECKSUM_LEN = 10
+CIPHERTEXT_HEADER = 'E3|'
+LEN_FIELD_LEN = 4
+MAX_PAD_LEN = 16
 U64_MASK = (1 << 64) - 1
+CLIPBOARD_NORMALIZATION_MAP = {
+    '\u2018': "'",
+    '\u2019': "'",
+    '\u201C': '"',
+    '\u201D': '"',
+    '\u2013': '-',
+    '\u2014': '-',
+    '\u2212': '-',
+    '\u00A0': ' ',
+    '\u2007': ' ',
+    '\u202F': ' ',
+    '\u2026': '...'
+}
 
 LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
                 'Norman','Asset','Halmak','AZERTY','QWERTZ']
@@ -281,7 +298,45 @@ def process(text, steck_pairs, rotors, enabled_layouts, user_rounds, nonce='', d
     return ''.join(result)
 
 # ── Checksum ──────────────────────────────────────────────────────────────────
-def compute_checksum(plaintext, key_str):
+def encode_base95_int(value, width):
+    if value < 0:
+        raise ValueError('Base-95 encoding requires a non-negative integer')
+    chars = ['0'] * width
+    for i in range(width - 1, -1, -1):
+        chars[i] = ALPHA[value % N]
+        value //= N
+    if value:
+        raise ValueError(f'Value exceeds {width} base-95 characters')
+    return ''.join(chars)
+
+def decode_base95_int(text):
+    value = 0
+    for ch in text:
+        idx = ALPHA.find(ch)
+        if idx < 0:
+            raise ValueError(f'Non-alphabet character in base-95 field: {repr(ch)}')
+        value = value * N + idx
+    return value
+
+def encode_length_field(length):
+    return encode_base95_int(length, LEN_FIELD_LEN)
+
+def decode_length_field(field):
+    if len(field) != LEN_FIELD_LEN:
+        raise ValueError(f'Length field must be {LEN_FIELD_LEN} characters')
+    return decode_base95_int(field)
+
+def compute_checksum(plaintext, key_str, len_field=None):
+    if len_field is None:
+        len_field = encode_length_field(len(plaintext))
+    v = hash_str64(len_field + '|' + plaintext + '|' + key_str + '|chk64')
+    out = ''
+    for i in range(CHECKSUM_LEN):
+        v = lcg64(v ^ i)
+        out += ALPHA[v % N]
+    return out
+
+def legacy_compute_checksum(plaintext, key_str):
     v = hash_str64(plaintext + '|' + key_str + '|chk64')
     out = ''
     for i in range(CHECKSUM_LEN):
@@ -289,24 +344,201 @@ def compute_checksum(plaintext, key_str):
         out += ALPHA[v % N]
     return out
 
-def checksum_pos(key_str, total_len):
+def legacy_checksum_pos(key_str, total_len):
     h = hash_str(key_str + 'chkpos')
     return h % max(1, total_len - CHECKSUM_LEN)
 
-def embed_checksum(ciphertext, plaintext, key_str):
-    chk = compute_checksum(plaintext, key_str)
-    pos = checksum_pos(key_str, len(ciphertext) + CHECKSUM_LEN)
+def legacy_embed_checksum(ciphertext, plaintext, key_str):
+    chk = legacy_compute_checksum(plaintext, key_str)
+    pos = legacy_checksum_pos(key_str, len(ciphertext) + CHECKSUM_LEN)
     return ciphertext[:pos] + chk + ciphertext[pos:]
 
-def strip_checksum(ciphertext, key_str):
-    pos = checksum_pos(key_str, len(ciphertext))
+def legacy_strip_checksum(ciphertext, key_str):
+    pos = legacy_checksum_pos(key_str, len(ciphertext))
     chk = ciphertext[pos:pos + CHECKSUM_LEN]
     stripped = ciphertext[:pos] + ciphertext[pos + CHECKSUM_LEN:]
     return stripped, chk
 
-def verify_checksum(plaintext, extracted_chk, key_str):
-    expected = compute_checksum(plaintext, key_str)
-    return extracted_chk == expected
+def legacy_verify_checksum(plaintext, extracted_chk, key_str):
+    return extracted_chk == legacy_compute_checksum(plaintext, key_str)
+
+def compute_pad_length(plaintext, key_str):
+    return hash_str64(key_str + '|' + plaintext + '|padlen') % MAX_PAD_LEN
+
+def generate_padding(plaintext, key_str, pad_len=None):
+    if pad_len is None:
+        pad_len = compute_pad_length(plaintext, key_str)
+    if pad_len == 0:
+        return ''
+    out = ''
+    v = hash_str64(key_str + '|' + plaintext + '|padfill')
+    for i in range(pad_len):
+        v = lcg64(v ^ i)
+        out += ALPHA[v % N]
+    return out
+
+def pack_rc3_payload(plaintext, key_str):
+    len_field = encode_length_field(len(plaintext))
+    checksum = compute_checksum(plaintext, key_str, len_field)
+    padding = generate_padding(plaintext, key_str)
+    return len_field + plaintext + checksum + padding
+
+def unpack_rc3_payload(payload, key_str):
+    min_len = LEN_FIELD_LEN + CHECKSUM_LEN
+    if len(payload) < min_len:
+        return {
+            'plaintext': '',
+            'verified': False,
+            'checksum_ok': False,
+            'padding_ok': False,
+            'structure_ok': False,
+            'length_field': '',
+            'padding': '',
+            'error': f'Payload too short for rc.3 package ({len(payload)} chars)'
+        }
+
+    len_field = payload[:LEN_FIELD_LEN]
+    try:
+        plaintext_len = decode_length_field(len_field)
+    except ValueError as exc:
+        return {
+            'plaintext': '',
+            'verified': False,
+            'checksum_ok': False,
+            'padding_ok': False,
+            'structure_ok': False,
+            'length_field': len_field,
+            'padding': '',
+            'error': str(exc)
+        }
+
+    remaining = payload[LEN_FIELD_LEN:]
+    if plaintext_len > len(remaining) - CHECKSUM_LEN:
+        return {
+            'plaintext': '',
+            'verified': False,
+            'checksum_ok': False,
+            'padding_ok': False,
+            'structure_ok': False,
+            'length_field': len_field,
+            'padding': '',
+            'error': f'Length field decodes to {plaintext_len}, but payload only has {len(remaining)} chars after the header'
+        }
+
+    plaintext = remaining[:plaintext_len]
+    checksum = remaining[plaintext_len:plaintext_len + CHECKSUM_LEN]
+    padding = remaining[plaintext_len + CHECKSUM_LEN:]
+    checksum_ok = checksum == compute_checksum(plaintext, key_str, len_field)
+    expected_pad_len = compute_pad_length(plaintext, key_str)
+    expected_padding = generate_padding(plaintext, key_str, expected_pad_len)
+    padding_ok = len(padding) == expected_pad_len and padding == expected_padding
+    verified = checksum_ok and padding_ok
+    return {
+        'plaintext': plaintext,
+        'verified': verified,
+        'checksum_ok': checksum_ok,
+        'padding_ok': padding_ok,
+        'structure_ok': True,
+        'length_field': len_field,
+        'padding': padding,
+        'error': None if verified else 'Checksum or padding verification failed'
+    }
+
+def encrypt_text(plaintext, key_str):
+    k = parse_key(key_str)
+    payload = pack_rc3_payload(plaintext, k['key_str'])
+    cipher = process(payload, k['steck_pairs'], k['rotors'],
+                     k['enabled'], k['user_rounds'], k['nonce'], decrypt=False)
+    return CIPHERTEXT_HEADER + cipher
+
+def decrypt_text(ciphertext, key_str):
+    diagnostics = analyze_ciphertext(ciphertext)
+    k = parse_key(key_str)
+
+    if ciphertext.startswith(CIPHERTEXT_HEADER):
+        body = ciphertext[len(CIPHERTEXT_HEADER):]
+        payload = process(body, k['steck_pairs'], k['rotors'],
+                          k['enabled'], k['user_rounds'], k['nonce'], decrypt=True)
+        unpacked = unpack_rc3_payload(payload, k['key_str'])
+        unpacked.update({
+            'format': 'rc.3',
+            'diagnostics': diagnostics,
+            'payload': payload
+        })
+        return unpacked
+
+    stripped, chk = legacy_strip_checksum(ciphertext, k['key_str'])
+    plaintext = process(stripped, k['steck_pairs'], k['rotors'],
+                        k['enabled'], k['user_rounds'], k['nonce'], decrypt=True)
+    verified = legacy_verify_checksum(plaintext, chk, k['key_str'])
+    return {
+        'plaintext': plaintext,
+        'verified': verified,
+        'checksum_ok': verified,
+        'padding_ok': True,
+        'structure_ok': True,
+        'length_field': '',
+        'padding': '',
+        'error': None if verified else 'Checksum mismatch',
+        'format': 'rc.2-legacy',
+        'diagnostics': diagnostics,
+        'payload': stripped
+    }
+
+
+def format_cipher_char(ch):
+    if ch == ' ':
+        return '[space]'
+    if ch == '\n':
+        return '\\n'
+    if ch == '\r':
+        return '\\r'
+    if ch == '\t':
+        return '\\t'
+    return ch
+
+
+def summarize_cipher_issues(entries):
+    shown = []
+    for pos, char, replacement in entries[:4]:
+        base = f'{format_cipher_char(char)}@{pos}'
+        shown.append(base if replacement is None else f'{base}->{format_cipher_char(replacement)}')
+    if len(entries) > 4:
+        shown.append(f'+{len(entries) - 4} more')
+    return ', '.join(shown)
+
+
+def analyze_ciphertext(text):
+    non_ascii = []
+    normalized = []
+    controls = []
+    outside_alpha_count = 0
+    for pos, ch in enumerate(text, start=1):
+        if ch in ALPHA:
+            continue
+        outside_alpha_count += 1
+        replacement = CLIPBOARD_NORMALIZATION_MAP.get(ch)
+        if replacement is not None:
+            normalized.append((pos, ch, replacement))
+        if ch in '\r\n\t':
+            controls.append((pos, ch, None))
+        if ord(ch) > 127:
+            non_ascii.append((pos, ch, replacement))
+    warnings = []
+    if normalized:
+        warnings.append(f'Suspicious clipboard-normalized punctuation: {summarize_cipher_issues(normalized)}')
+    elif non_ascii:
+        warnings.append(f'Non-ASCII ciphertext characters detected: {summarize_cipher_issues(non_ascii)}')
+    if controls:
+        warnings.append(f'Whitespace/control characters detected: {summarize_cipher_issues(controls)}')
+    return {
+        'length': len(text),
+        'outside_alpha_count': outside_alpha_count,
+        'non_ascii': non_ascii,
+        'normalized': normalized,
+        'controls': controls,
+        'warnings': warnings,
+    }
 
 # ── Key parsing ───────────────────────────────────────────────────────────────
 def parse_key(key_str):
@@ -383,90 +615,123 @@ def calc_ioc(text):
     num = sum(n * (n - 1) for n in freq.values())
     return num / (L * (L - 1))
 
-def calc_key_strength(parsed_key):
-    """
-    Calculate theoretical key strength (bits) for a parsed key.
-    Components:
-      - Enabled layouts: C(10, k) where k = len(enabled)
-      - Rotors: (10 * N)^n where n = len(rotors)
-      - Stecker pairs: depends on number of pairs (each pair removes 2! permutations)
-      - User rounds: 999 possibilities (1-999)
-      - Nonce: optional N^3 possibilities
-    Returns: (bits, keyspace_str)
-    """
-    import math
-    
-    # Layouts: P(10, k) ordered permutations -- layout order matters in ENIGMAK
-    k = len(parsed_key['enabled'])
-    layout_combos = math.factorial(10) // math.factorial(10 - k)
-    
-    # Rotors: each rotor can be any of 10 layouts at N positions
-    num_rotors = len(parsed_key['rotors'])
-    rotor_combos = (10 * N) ** num_rotors
-    
-    # Stecker: C(N, 2k) * k! for k pairs (symmetric, so divided by 2^k)
-    # But we store as unordered pairs, so it's just ways to choose 2k chars from N
-    # For k pairs: C(N, 2k) * (2k)! / (2^k * k!) = C(N, 2k) * (2k-1)!! 
-    # Simpler: number of ways to partition 2k items into k unordered pairs
-    num_pairs = len(parsed_key['steck_pairs'])
+def _permutation_count(n, k):
+    total = 1
+    for i in range(k):
+        total *= (n - i)
+    return total
+
+def _steck_pairing_count(alpha_size, num_pairs):
     if num_pairs == 0:
-        steck_combos = 1
-    else:
-        # C(N, 2*num_pairs) * (2*num_pairs-1)!! / num_pairs!
-        # But we implement: C(N, 2k) for choosing chars, then partition into pairs
-        steck_combos = 1
-        remaining = N
-        for i in range(num_pairs):
-            steck_combos *= math.comb(remaining, 2)
-            remaining -= 2
-        steck_combos //= math.factorial(num_pairs)  # unordered pairs
-    
-    # Rounds: 999 (1-999)
+        return 1
+    total = 1
+    remaining = alpha_size
+    for _ in range(num_pairs):
+        total *= math.comb(remaining, 2)
+        remaining -= 2
+    return total // math.factorial(num_pairs)
+
+def calc_key_strength(parsed_key):
+    enabled_count = len(parsed_key['enabled'])
+    rotor_count = len(parsed_key['rotors'])
+    pair_count = len(parsed_key['steck_pairs'])
+    layout_combos = _permutation_count(10, enabled_count)
+    rotor_combos = (enabled_count * N) ** rotor_count
+    steck_combos = _steck_pairing_count(N, pair_count)
     round_combos = 999
-    
-    # Nonce: N^3 if present
     nonce_combos = (N ** 3) if parsed_key['nonce'] else 1
-    
+
     total = layout_combos * rotor_combos * steck_combos * round_combos * nonce_combos
-    bits = math.log2(total)
-    
-    return bits, total
+    components = {
+        'layouts': {'count': layout_combos, 'bits': math.log2(layout_combos)},
+        'rotors': {'count': rotor_combos, 'bits': math.log2(rotor_combos) if rotor_combos > 1 else 0.0},
+        'steck': {'count': steck_combos, 'bits': math.log2(steck_combos) if steck_combos > 1 else 0.0},
+        'rounds': {'count': round_combos, 'bits': math.log2(round_combos)},
+        'nonce': {'count': nonce_combos, 'bits': math.log2(nonce_combos) if nonce_combos > 1 else 0.0},
+    }
+    km = compute_key_material(parsed_key['steck_pairs'], parsed_key['rotors'],
+                              parsed_key['enabled'], parsed_key['user_rounds'])
+    profile = {
+        'enabled_layouts': list(parsed_key['enabled']),
+        'enabled_count': enabled_count,
+        'rotor_count': rotor_count,
+        'rotor_layouts': [r['layout'] for r in parsed_key['rotors']],
+        'steck_pairs': pair_count,
+        'base_rounds': parsed_key['user_rounds'],
+        'final_rounds': km['rounds'],
+        'nonce_present': bool(parsed_key['nonce']),
+        'nonce': parsed_key['nonce'] or '-',
+    }
+    return {
+        'family_bits': math.log2(total),
+        'total': total,
+        'components': components,
+        'profile': profile,
+    }
 
 # ── Key generation ────────────────────────────────────────────────────────────
-def generate_key(num_rotors=3, num_steck_pairs=8, num_layouts=4):
-    enabled_idxs = secrets.SystemRandom().sample(range(10), num_layouts)
+def generate_key(num_rotors=None, num_steck_pairs=None, num_layouts=None, user_rounds=None, include_nonce=None):
+    rng = secrets.SystemRandom()
+    if num_layouts is None:
+        num_layouts = secrets.randbelow(len(LAYOUT_NAMES)) + 1
+    if num_rotors is None:
+        num_rotors = secrets.randbelow(13) + 1
+    if num_steck_pairs is None:
+        num_steck_pairs = secrets.randbelow((N // 2) + 1)
+    if user_rounds is None:
+        user_rounds = secrets.randbelow(999) + 1
+    if include_nonce is None:
+        include_nonce = bool(secrets.randbelow(2))
+
+    if not 1 <= num_layouts <= len(LAYOUT_NAMES):
+        raise ValueError(f'num_layouts must be between 1 and {len(LAYOUT_NAMES)}')
+    if not 1 <= num_rotors <= 13:
+        raise ValueError('num_rotors must be between 1 and 13')
+    if not 0 <= num_steck_pairs <= N // 2:
+        raise ValueError(f'num_steck_pairs must be between 0 and {N // 2}')
+    if not 1 <= user_rounds <= 999:
+        raise ValueError('user_rounds must be between 1 and 999')
+
+    enabled_idxs = rng.sample(range(len(LAYOUT_NAMES)), num_layouts)
     enabled = [LAYOUT_NAMES[i] for i in enabled_idxs]
     rotors = [
-        {'layout': LAYOUT_NAMES[secrets.choice(enabled_idxs)], 'pos': secrets.randbelow(N)}
+        {'layout': LAYOUT_NAMES[rng.choice(enabled_idxs)], 'pos': secrets.randbelow(N)}
         for _ in range(num_rotors)
     ]
     chars = list(ALPHA)
-    secrets.SystemRandom().shuffle(chars)
-    steck_pairs = [(chars[i*2], chars[i*2+1]) for i in range(num_steck_pairs)]
-    user_rounds = secrets.randbelow(999) + 1
-    nonce_chars = [ALPHA[secrets.randbelow(N)] for _ in range(3)]
-    nonce = ''.join(nonce_chars)
+    rng.shuffle(chars)
+    steck_pairs = [(chars[i * 2], chars[i * 2 + 1]) for i in range(num_steck_pairs)]
+    nonce = ''
+    if include_nonce:
+        nonce = ''.join(ALPHA[secrets.randbelow(N)] for _ in range(3))
     return encode_key(enabled, rotors, steck_pairs, user_rounds, nonce)
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def cmd_encrypt(plaintext, key_str):
-    k = parse_key(key_str)
-    cipher = process(plaintext, k['steck_pairs'], k['rotors'],
-                     k['enabled'], k['user_rounds'], k['nonce'], decrypt=False)
-    result = embed_checksum(cipher, plaintext, k['key_str'])
-    print(result)
+    print(encrypt_text(plaintext, key_str))
 
 def cmd_decrypt(ciphertext, key_str):
-    k = parse_key(key_str)
-    stripped, chk = strip_checksum(ciphertext, k['key_str'])
-    plain = process(stripped, k['steck_pairs'], k['rotors'],
-                    k['enabled'], k['user_rounds'], k['nonce'], decrypt=True)
-    verified = verify_checksum(plain, chk, k['key_str'])
-    print(plain)
-    if verified:
-        print('[✓ Checksum verified]', file=sys.stderr)
+    result = decrypt_text(ciphertext, key_str)
+    diagnostics = result['diagnostics']
+    for warning in diagnostics['warnings']:
+        print(f'[!] {warning}', file=sys.stderr)
+    print(result['plaintext'])
+    print(f'[i] Format: {result["format"]}', file=sys.stderr)
+    if result['verified']:
+        print('[OK] Checksum and padding verified', file=sys.stderr)
     else:
-        print('[✗ Checksum mismatch - wrong key or corrupted message]', file=sys.stderr)
+        print('[X] Verification failed - wrong key or corrupted message', file=sys.stderr)
+        if result['format'] == 'rc.3':
+            if not result['structure_ok']:
+                print(f'[!] rc.3 package parse failed: {result["error"]}', file=sys.stderr)
+            else:
+                if not result['checksum_ok']:
+                    print('[!] rc.3 checksum mismatch', file=sys.stderr)
+                if not result['padding_ok']:
+                    print('[!] rc.3 padding mismatch', file=sys.stderr)
+        if diagnostics['outside_alpha_count'] > 0:
+            print('[!] Characters outside the ENIGMAK alphabet do not advance rotor state and can desync the rest of the message.', file=sys.stderr)
+        print(f'[!] Ciphertext received: {diagnostics["length"]} chars. Compare length and watch for dropped punctuation such as backticks (`).', file=sys.stderr)
 
 def cmd_keygen():
     key = generate_key()
@@ -481,13 +746,27 @@ def cmd_ioc(ciphertext):
 
 def cmd_keystrength(key_str):
     k = parse_key(key_str)
-    bits, keyspace = calc_key_strength(k)
-    print(f'Key strength: {bits:.1f} bits (~2^{bits:.1f})')
-    print(f'Keyspace: {keyspace:.3e}')
+    strength = calc_key_strength(k)
+    profile = strength['profile']
+    print(f'Key family strength: {strength["family_bits"]:.1f} bits (~2^{strength["family_bits"]:.1f})')
+    print(f'Keyspace: {strength["total"]:.3e}')
+    print('Family-size breakdown:')
+    print(f'  layouts: {strength["components"]["layouts"]["bits"]:.3f} bits')
+    print(f'  rotors:  {strength["components"]["rotors"]["bits"]:.3f} bits')
+    print(f'  steck:   {strength["components"]["steck"]["bits"]:.3f} bits')
+    print(f'  rounds:  {strength["components"]["rounds"]["bits"]:.3f} bits')
+    print(f'  nonce:   {strength["components"]["nonce"]["bits"]:.3f} bits')
+    print('Current key profile:')
+    print(f'  enabled layouts: {profile["enabled_count"]} ({",".join(profile["enabled_layouts"])})')
+    print(f'  rotors: {profile["rotor_count"]} ({",".join(profile["rotor_layouts"])})')
+    print(f'  steck pairs: {profile["steck_pairs"]}')
+    print(f'  base rounds: {profile["base_rounds"]}')
+    print(f'  final rounds: {profile["final_rounds"]}')
+    print(f'  nonce: {profile["nonce"]}')
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ENIGMAK v3.0.0-rc.2 - 95-symbol rotor cipher',
+        description='ENIGMAK v3.0.0-rc.3 - 95-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )

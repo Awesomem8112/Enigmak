@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v3.0.0-rc.2 - JavaScript module
+ * ENIGMAK v3.0.0-rc.3 - JavaScript module
  * 95-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -21,7 +21,23 @@ const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' +
 const N = ALPHA.length; // 95
 const STEP_MASK_ACTIVE = 66;
 const CHECKSUM_LEN = 10;
+const CIPHERTEXT_HEADER = 'E3|';
+const LEN_FIELD_LEN = 4;
+const MAX_PAD_LEN = 16;
 const U64_MASK = (1n << 64n) - 1n;
+const CLIPBOARD_NORMALIZATION_MAP = Object.freeze({
+  '\u2018': "'",
+  '\u2019': "'",
+  '\u201C': '"',
+  '\u201D': '"',
+  '\u2013': '-',
+  '\u2014': '-',
+  '\u2212': '-',
+  '\u00A0': ' ',
+  '\u2007': ' ',
+  '\u202F': ' ',
+  '\u2026': '...'
+});
 
 const LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
                       'Norman','Asset','Halmak','AZERTY','QWERTZ'];
@@ -275,7 +291,49 @@ function _rotorStateHashJS(rs) {
 }
 
 // ── Checksum ──────────────────────────────────────────────────────────────────
-function computeChecksum(plaintext, keyStr) {
+function encodeBase95Int(value, width) {
+  if (value < 0) throw new Error('Base-95 encoding requires a non-negative integer');
+  const chars = Array(width).fill('0');
+  let current = value;
+  for (let i = width - 1; i >= 0; i--) {
+    chars[i] = ALPHA[current % N];
+    current = Math.floor(current / N);
+  }
+  if (current !== 0) throw new Error(`Value exceeds ${width} base-95 characters`);
+  return chars.join('');
+}
+
+function decodeBase95Int(text) {
+  let value = 0;
+  for (const ch of text) {
+    const idx = ALPHA.indexOf(ch);
+    if (idx < 0) throw new Error(`Non-alphabet character in base-95 field: ${JSON.stringify(ch)}`);
+    value = value * N + idx;
+  }
+  return value;
+}
+
+function encodeLengthField(length) {
+  return encodeBase95Int(length, LEN_FIELD_LEN);
+}
+
+function decodeLengthField(field) {
+  if (field.length !== LEN_FIELD_LEN) throw new Error(`Length field must be ${LEN_FIELD_LEN} characters`);
+  return decodeBase95Int(field);
+}
+
+function computeChecksum(plaintext, keyStr, lenField = null) {
+  const field = lenField ?? encodeLengthField(plaintext.length);
+  let out = '';
+  let v = hashStr64(field + '|' + plaintext + '|' + keyStr + '|chk64');
+  for (let i = 0; i < CHECKSUM_LEN; i++) {
+    v = lcg64(v ^ BigInt(i));
+    out += ALPHA[Number(v % BigInt(N))];
+  }
+  return out;
+}
+
+function legacyComputeChecksum(plaintext, keyStr) {
   let out = '';
   let v = hashStr64(plaintext + '|' + keyStr + '|chk64');
   for (let i = 0; i < CHECKSUM_LEN; i++) {
@@ -285,8 +343,143 @@ function computeChecksum(plaintext, keyStr) {
   return out;
 }
 
-function checksumPos(keyStr, totalLen) {
+function legacyChecksumPos(keyStr, totalLen) {
   return hashStr(keyStr + 'chkpos') % Math.max(1, totalLen - CHECKSUM_LEN);
+}
+
+function computePadLength(plaintext, keyStr) {
+  return Number(hashStr64(keyStr + '|' + plaintext + '|padlen') % BigInt(MAX_PAD_LEN));
+}
+
+function generatePadding(plaintext, keyStr, padLen = null) {
+  const targetLen = padLen ?? computePadLength(plaintext, keyStr);
+  if (targetLen === 0) return '';
+  let out = '';
+  let v = hashStr64(keyStr + '|' + plaintext + '|padfill');
+  for (let i = 0; i < targetLen; i++) {
+    v = lcg64(v ^ BigInt(i));
+    out += ALPHA[Number(v % BigInt(N))];
+  }
+  return out;
+}
+
+function packRc3Payload(plaintext, keyStr) {
+  const lenField = encodeLengthField(plaintext.length);
+  const checksum = computeChecksum(plaintext, keyStr, lenField);
+  const padding = generatePadding(plaintext, keyStr);
+  return lenField + plaintext + checksum + padding;
+}
+
+function unpackRc3Payload(payload, keyStr) {
+  const minLen = LEN_FIELD_LEN + CHECKSUM_LEN;
+  if (payload.length < minLen) {
+    return {
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      lengthField: '',
+      padding: '',
+      error: `Payload too short for rc.3 package (${payload.length} chars)`,
+    };
+  }
+
+  const lengthField = payload.slice(0, LEN_FIELD_LEN);
+  let plaintextLength;
+  try {
+    plaintextLength = decodeLengthField(lengthField);
+  } catch (error) {
+    return {
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      lengthField,
+      padding: '',
+      error: error.message,
+    };
+  }
+
+  const remaining = payload.slice(LEN_FIELD_LEN);
+  if (plaintextLength > remaining.length - CHECKSUM_LEN) {
+    return {
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      lengthField,
+      padding: '',
+      error: `Length field decodes to ${plaintextLength}, but payload only has ${remaining.length} chars after the header`,
+    };
+  }
+
+  const plaintext = remaining.slice(0, plaintextLength);
+  const checksum = remaining.slice(plaintextLength, plaintextLength + CHECKSUM_LEN);
+  const padding = remaining.slice(plaintextLength + CHECKSUM_LEN);
+  const checksumOk = checksum === computeChecksum(plaintext, keyStr, lengthField);
+  const expectedPadLen = computePadLength(plaintext, keyStr);
+  const expectedPadding = generatePadding(plaintext, keyStr, expectedPadLen);
+  const paddingOk = padding.length === expectedPadLen && padding === expectedPadding;
+  return {
+    plaintext,
+    verified: checksumOk && paddingOk,
+    checksumOk,
+    paddingOk,
+    structureOk: true,
+    lengthField,
+    padding,
+    error: checksumOk && paddingOk ? null : 'Checksum or padding verification failed',
+  };
+}
+
+function formatCipherChar(ch) {
+  if (ch === ' ') return '[space]';
+  if (ch === '\n') return '\\n';
+  if (ch === '\r') return '\\r';
+  if (ch === '\t') return '\\t';
+  return ch;
+}
+
+function summarizeCipherIssues(entries) {
+  const shown = entries.slice(0, 4).map(({ pos, char, replacement }) => {
+    const base = `${formatCipherChar(char)}@${pos}`;
+    return replacement === undefined ? base : `${base}->${formatCipherChar(replacement)}`;
+  });
+  if (entries.length > 4) shown.push(`+${entries.length - 4} more`);
+  return shown.join(', ');
+}
+
+function analyzeCiphertext(text) {
+  const nonAscii = [];
+  const normalized = [];
+  const controls = [];
+  let outsideAlphabetCount = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ALPHA.includes(ch)) continue;
+    outsideAlphabetCount++;
+    if (Object.prototype.hasOwnProperty.call(CLIPBOARD_NORMALIZATION_MAP, ch)) {
+      normalized.push({ pos: i + 1, char: ch, replacement: CLIPBOARD_NORMALIZATION_MAP[ch] });
+    }
+    if (ch === '\r' || ch === '\n' || ch === '\t') controls.push({ pos: i + 1, char: ch });
+    if (ch.charCodeAt(0) > 127) {
+      nonAscii.push({
+        pos: i + 1,
+        char: ch,
+        replacement: Object.prototype.hasOwnProperty.call(CLIPBOARD_NORMALIZATION_MAP, ch)
+          ? CLIPBOARD_NORMALIZATION_MAP[ch]
+          : undefined
+      });
+    }
+  }
+  const warnings = [];
+  if (normalized.length) warnings.push(`Suspicious clipboard-normalized punctuation: ${summarizeCipherIssues(normalized)}`);
+  else if (nonAscii.length) warnings.push(`Non-ASCII ciphertext characters detected: ${summarizeCipherIssues(nonAscii)}`);
+  if (controls.length) warnings.push(`Whitespace/control characters detected: ${summarizeCipherIssues(controls)}`);
+  return { length: text.length, outsideAlphabetCount, nonAscii, normalized, controls, warnings };
 }
 
 // ── Key parsing / encoding ────────────────────────────────────────────────────
@@ -331,14 +524,13 @@ function encodeKey(enabled, rotors, steckPairs, userRounds, nonce='') {
 
 /**
  * Encrypt plaintext with the given key string.
- * Returns ciphertext with embedded checksum.
+ * Returns ciphertext with an rc.3 header and encrypted package body.
  */
 function encrypt(plaintext, keyStr) {
   const k = parseKey(keyStr);
-  const cipher = _process(plaintext, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false);
-  const chk = computeChecksum(plaintext, k.keyStr);
-  const pos = checksumPos(k.keyStr, cipher.length + CHECKSUM_LEN);
-  return cipher.slice(0, pos) + chk + cipher.slice(pos);
+  const payload = packRc3Payload(plaintext, k.keyStr);
+  const cipher = _process(payload, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, false);
+  return CIPHERTEXT_HEADER + cipher;
 }
 
 /**
@@ -346,33 +538,79 @@ function encrypt(plaintext, keyStr) {
  * Returns { plaintext, verified } where verified indicates checksum status.
  */
 function decrypt(ciphertext, keyStr) {
+  const diagnostics = analyzeCiphertext(ciphertext);
   const k = parseKey(keyStr);
-  const pos = checksumPos(k.keyStr, ciphertext.length);
+  if (ciphertext.startsWith(CIPHERTEXT_HEADER)) {
+    const body = ciphertext.slice(CIPHERTEXT_HEADER.length);
+    const payload = _process(body, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, true);
+    const unpacked = unpackRc3Payload(payload, k.keyStr);
+    return { ...unpacked, diagnostics, payload, format: 'rc.3' };
+  }
+  const pos = legacyChecksumPos(k.keyStr, ciphertext.length);
   const chk = ciphertext.slice(pos, pos + CHECKSUM_LEN);
   const stripped = ciphertext.slice(0, pos) + ciphertext.slice(pos + CHECKSUM_LEN);
   const plaintext = _process(stripped, k.steckPairs, k.rotors, k.enabled, k.userRounds, k.nonce, true);
-  const expected = computeChecksum(plaintext, k.keyStr);
-  return { plaintext, verified: chk === expected };
+  const verified = chk === legacyComputeChecksum(plaintext, k.keyStr);
+  return {
+    plaintext,
+    verified,
+    checksumOk: verified,
+    paddingOk: true,
+    structureOk: true,
+    diagnostics,
+    payload: stripped,
+    format: 'rc.2-legacy',
+    error: verified ? null : 'Checksum mismatch',
+  };
 }
 
 /**
  * Generate a random key string.
  */
 function generateKey(opts = {}) {
-  const { numRotors=3, numSteck=8, numLayouts=4, userRounds=null } = opts;
   const crypto = typeof window !== 'undefined' ? window.crypto : require('crypto').webcrypto;
-  const rand = (max) => { const a=new Uint32Array(1); crypto.getRandomValues(a); return a[0]%max; };
-  const layoutIdxs = [...Array(10).keys()].sort(()=>rand(2)-1).slice(0,numLayouts);
+  const rand = (max) => {
+    if (max <= 0) throw new Error('rand(max) requires max > 0');
+    const limit = Math.floor(0x100000000 / max) * max;
+    const a = new Uint32Array(1);
+    do { crypto.getRandomValues(a); } while (a[0] >= limit);
+    return a[0] % max;
+  };
+  const shuffle = (items) => {
+    const copy = [...items];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = rand(i + 1);
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  };
+  const choice = (items) => items[rand(items.length)];
+  const {
+    numRotors = null,
+    numSteck = null,
+    numLayouts = null,
+    userRounds = null,
+    includeNonce = null,
+  } = opts;
+  const finalLayouts = numLayouts ?? (rand(LAYOUT_NAMES.length) + 1);
+  const finalRotors = numRotors ?? (rand(13) + 1);
+  const finalSteck = numSteck ?? rand(Math.floor(N / 2) + 1);
+  const finalRounds = userRounds ?? (rand(999) + 1);
+  const useNonce = includeNonce ?? Boolean(rand(2));
+  if (finalLayouts < 1 || finalLayouts > LAYOUT_NAMES.length) throw new Error(`numLayouts must be between 1 and ${LAYOUT_NAMES.length}`);
+  if (finalRotors < 1 || finalRotors > 13) throw new Error('numRotors must be between 1 and 13');
+  if (finalSteck < 0 || finalSteck > Math.floor(N / 2)) throw new Error(`numSteck must be between 0 and ${Math.floor(N / 2)}`);
+  if (finalRounds < 1 || finalRounds > 999) throw new Error('userRounds must be between 1 and 999');
+  const layoutIdxs = shuffle([...Array(10).keys()]).slice(0, finalLayouts);
   const enabled = new Set(layoutIdxs.map(i=>LAYOUT_NAMES[i]));
-  const rotors = Array.from({length:numRotors}, ()=>({
-    layout: LAYOUT_NAMES[layoutIdxs[rand(numLayouts)]],
+  const rotors = Array.from({length:finalRotors}, ()=>({
+    layout: LAYOUT_NAMES[choice(layoutIdxs)],
     pos: rand(N)
   }));
-  const chars = [...ALPHA].sort(()=>rand(2)-1);
-  const steckPairs = Array.from({length:numSteck},(_,i)=>[chars[i*2],chars[i*2+1]]);
-  const u = userRounds ?? (rand(999)+1);
-  const nonceChars = [ALPHA[rand(N)],ALPHA[rand(N)],ALPHA[rand(N)]];
-  return encodeKey(enabled, rotors, steckPairs, u, nonceChars.join(''));
+  const chars = shuffle([...ALPHA]);
+  const steckPairs = Array.from({length:finalSteck},(_,i)=>[chars[i*2],chars[i*2+1]]);
+  const nonceChars = useNonce ? [ALPHA[rand(N)], ALPHA[rand(N)], ALPHA[rand(N)]] : [];
+  return encodeKey(enabled, rotors, steckPairs, finalRounds, nonceChars.join(''));
 }
 
 /**
@@ -388,32 +626,65 @@ function calcIoC(text) {
 }
 
 function calcKeyStrength(parsedKey) {
-  // Calculate theoretical keyspace in bits
-  const C = (n, k) => { if (k > n || k < 0) return 0; if (k === 0 || k === n) return 1; let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return Math.round(r); };
-  // P(10, k) ordered permutations -- layout order matters in ENIGMAK
+  const steckPairingCount = (alphaSize, numPairs) => {
+    if (numPairs === 0) return 1;
+    let total = 1;
+    let remaining = alphaSize;
+    for (let i = 0; i < numPairs; i++) {
+      total *= combination(remaining, 2);
+      remaining -= 2;
+    }
+    return Math.round(total / factorial(numPairs));
+  };
   const k = parsedKey.enabled.size;
   let layoutCombos = 1;
   for (let i = 0; i < k; i++) layoutCombos *= (10 - i);
-  const rotorCombos = Math.pow(10 * N, parsedKey.rotors.length);
-  let steckCombos = 1;
-  let remaining = N;
-  for (let i = 0; i < parsedKey.steckPairs.length; i++) {
-    steckCombos *= C(remaining, 2);
-    remaining -= 2;
-  }
-  if (parsedKey.steckPairs.length > 0) steckCombos = Math.round(steckCombos / factorial(parsedKey.steckPairs.length));
+  const rotorCombos = Math.pow(k * N, parsedKey.rotors.length);
+  const steckCombos = steckPairingCount(N, parsedKey.steckPairs.length);
   const roundCombos = 999;
   const nonceCombos = parsedKey.nonce ? Math.pow(N, 3) : 1;
   const total = layoutCombos * rotorCombos * steckCombos * roundCombos * nonceCombos;
-  const bits = Math.log2(total);
-  return { bits, total };
+  const km = computeKeyMaterial(parsedKey.steckPairs, parsedKey.rotors, parsedKey.enabled, parsedKey.userRounds);
+  const familyBits = Math.log2(total);
+  return {
+    familyBits,
+    bits: familyBits,
+    total,
+    components: {
+      layouts: { count: layoutCombos, bits: Math.log2(layoutCombos) },
+      rotors: { count: rotorCombos, bits: rotorCombos > 1 ? Math.log2(rotorCombos) : 0 },
+      steck: { count: steckCombos, bits: steckCombos > 1 ? Math.log2(steckCombos) : 0 },
+      rounds: { count: roundCombos, bits: Math.log2(roundCombos) },
+      nonce: { count: nonceCombos, bits: nonceCombos > 1 ? Math.log2(nonceCombos) : 0 },
+    },
+    profile: {
+      enabledLayouts: [...parsedKey.enabled],
+      enabledCount: parsedKey.enabled.size,
+      rotorCount: parsedKey.rotors.length,
+      rotorLayouts: parsedKey.rotors.map(r => r.layout),
+      steckPairs: parsedKey.steckPairs.length,
+      baseRounds: parsedKey.userRounds,
+      finalRounds: km.rounds,
+      noncePresent: Boolean(parsedKey.nonce),
+      nonce: parsedKey.nonce || '-',
+    },
+  };
+}
+
+function combination(n, k) {
+  if (k < 0 || k > n) return 0;
+  if (k === 0 || k === n) return 1;
+  let r = 1;
+  const upper = Math.min(k, n - k);
+  for (let i = 0; i < upper; i++) r = (r * (n - i)) / (i + 1);
+  return Math.round(r);
 }
 
 function factorial(n) { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; }
 
 // Export
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, ALPHA, N };
+  module.exports = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, analyzeCiphertext, ALPHA, N };
 } else if (typeof window !== 'undefined') {
-  window.ENIGMAK = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, ALPHA, N };
+  window.ENIGMAK = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, analyzeCiphertext, ALPHA, N };
 }

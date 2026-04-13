@@ -1,4 +1,4 @@
-# ENIGMAK v3.0.0-rc.2 Formal Specification
+# ENIGMAK v3.0.0-rc.3 Formal Specification
 
 ## 1. Overview
 
@@ -12,7 +12,7 @@ alphabet. It combines:
 - keyed diffusion
 - state-dependent offsets
 - position whitening
-- a keyed embedded checksum
+- a versioned encrypted payload with a keyed checksum
 
 ## 2. Alphabet
 
@@ -366,9 +366,41 @@ whiteningSeed = keySum XOR 0xC0FFEE42
 lcg32(v) = (v * 1664525 + 1013904223) mod 2^32
 ```
 
-## 14. Checksum
+## 14. RC.3 Ciphertext Packaging
 
-### 14.1 Checksum generation
+### 14.1 Header
+
+New ciphertexts begin with:
+
+```text
+E3|
+```
+
+Unheaded ciphertext is treated as legacy `rc.2`.
+
+### 14.2 Payload layout
+
+The encrypted rc.3 body is:
+
+```text
+[len_field:4][plaintext][checksum:10][padding:0..15]
+```
+
+Where:
+
+- `len_field` is a fixed-width base-95 encoding of plaintext length
+- `checksum` is a 64-bit keyed checksum rendered as 10 base-95 characters
+- `padding` is deterministic keyed padding
+
+### 14.3 Length field
+
+Length encoding uses the live alphabet `Sigma` as base 95:
+
+```text
+len_field = base95_fixed_width(len(plaintext), 4)
+```
+
+### 14.4 Checksum generation
 
 Checksum length:
 
@@ -376,21 +408,13 @@ Checksum length:
 CHECKSUM_LEN = 10
 ```
 
-Use 64-bit FNV-1a over UTF-8 bytes:
-
-```text
-h = 0xCBF29CE484222325
-for each byte b:
-    h = (h XOR b) * 0x100000001B3 mod 2^64
-```
-
 Seed input:
 
 ```text
-plaintext + "|" + keyStr + "|chk64"
+len_field + "|" + plaintext + "|" + keyStr + "|chk64"
 ```
 
-Then emit 10 symbols with a 64-bit LCG:
+Use 64-bit FNV-1a over UTF-8 bytes, then emit 10 symbols with a 64-bit LCG:
 
 ```text
 lcg64(v) = (v * 6364136223846793005 + 1442695040888963407) mod 2^64
@@ -401,25 +425,54 @@ for i in 0..9:
     checksum[i] = Sigma[v mod N]
 ```
 
-### 14.2 Checksum position
+### 14.5 Deterministic keyed padding
 
-The insertion position is derived from the ASCII key string with 32-bit FNV-1a:
+Padding length:
 
 ```text
-pos = hash32(keyStr + "chkpos") mod max(1, totalLen - CHECKSUM_LEN)
+pad_len = hash64(keyStr + "|" + plaintext + "|padlen") mod 16
 ```
 
-### 14.3 Ciphertext layout
+Padding symbols:
 
-Encryption inserts the 10-character checksum at `pos` inside the ciphertext.
+```text
+state = hash64(keyStr + "|" + plaintext + "|padfill")
+for i in 0..pad_len-1:
+    state = lcg64(state XOR i)
+    padding[i] = Sigma[state mod N]
+```
+
+### 14.6 Encryption layout
+
+Encryption:
+
+```text
+payload = len_field || plaintext || checksum || padding
+ciphertext = "E3|" || Encrypt(payload, key)
+```
+
+### 14.7 Decryption layout
 
 Decryption:
 
-- removes 10 characters from the same derived position when the input length is
-  greater than `CHECKSUM_LEN`
-- decrypts the stripped ciphertext
-- recomputes the expected checksum from the recovered plaintext
-- compares extracted and expected checksum strings
+- if the input begins with `E3|`, decrypt the body as an rc.3 payload
+- recover `len_field`
+- parse the first `plaintext_len` characters as plaintext
+- parse the next 10 characters as checksum
+- treat the remaining characters as padding
+- recompute expected checksum and expected padding from the recovered plaintext
+- verify both
+
+### 14.8 Legacy fallback
+
+If the input does not begin with `E3|`, decryptors fall back to the legacy
+`rc.2` visible-checksum path:
+
+- compute the old checksum insertion position from `hash32(keyStr + "chkpos")`
+- remove 10 visible checksum characters
+- decrypt the stripped ciphertext
+- recompute the legacy checksum from recovered plaintext
+- compare extracted and expected checksum strings
 
 ## 15. Key Fingerprint
 
@@ -459,7 +512,7 @@ Approximate strength:
 
 ## 17. Current Limits
 
-- Non-ASCII / Unicode characters are still passthrough in `rc.2`.
+- Non-ASCII / Unicode characters are still passthrough in `rc.3`.
 - The checksum is not a replacement for researched authenticated encryption.
 - Key reuse creates correlated ciphertext and should be avoided.
 - No formal audit has been completed.

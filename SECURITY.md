@@ -22,11 +22,12 @@ public scrutiny.
 - **Not formally audited.** ENIGMAK has not undergone professional
   cryptanalytic review.
 - **Non-ASCII passthrough.** Characters outside the 95-symbol built-in ASCII
-  alphabet still pass through unchanged in `v3.0.0-rc.2`.
+  alphabet still pass through unchanged in `v3.0.0-rc.3`.
 - **Key reuse.** Reusing a key across messages creates correlated ciphertext
   and is strongly discouraged.
-- **Checksum is not AEAD.** The current 64-bit keyed checksum helps detect many
-  wrong-key and corruption cases, but it is not a substitute for researched
+- **Checksum is not AEAD.** The current rc.3 package encrypts a 64-bit keyed
+  checksum and deterministic padding, which is better than the old visible
+  checksum block, but it is still not a substitute for researched
   authenticated encryption.
 - **Meet-in-the-middle.** A theoretical MITM attack may still be possible if
   the diffusion and scramble layers are not strong enough in aggregate.
@@ -44,6 +45,9 @@ public scrutiny.
   layer.
 - Word-boundary leakage from plaintext spaces was addressed in `v3.0.0-rc.2`
   by adding space to the cipher alphabet.
+- Exact plaintext-length leakage from a visible fixed checksum block was
+  reduced in `v3.0.0-rc.3` by moving length, checksum, and padding inside the
+  encrypted `E3|` payload.
 
 ## Recommended Usage
 
@@ -51,6 +55,7 @@ public scrutiny.
 - Use the nonce for every message.
 - Never transmit keys through the same channel as ciphertext.
 - Verify the key fingerprint verbally before use.
+- Prefer the `E3|` rc.3 format for all new messages.
 - Treat the current checksum as an integrity hint, not as authenticated
   encryption.
 - Do not use ENIGMAK for classified, medical, legal, or life-critical

@@ -1,9 +1,9 @@
 # ENIGMAK Technical Notes
 
-This document describes the current `v3.0.0-rc.2` design at a high level. It
-is meant to complement `SPECIFICATION.md`, not replace it.
+This document describes the current `v3.0.0-rc.3` design at a high level. It
+complements `SPECIFICATION.md`, not replaces it.
 
-## Current RC.2 Snapshot
+## Current RC.3 Snapshot
 
 The active branch currently uses:
 
@@ -16,10 +16,14 @@ The active branch currently uses:
 - keyed 95-position diffusion
 - rotor-state feedback in position offsets
 - position whitening
-- a 64-bit checksum encoded as 10 base-95 characters
+- an `E3|` ciphertext header
+- an encrypted 64-bit checksum inside the payload
+- deterministic keyed padding that hides exact plaintext length within a 16-character window
+- full-random default key generation
 
-Lowercase letters were added in `rc.1`. Space encryption and the larger
-checksum landed in `rc.2`.
+Lowercase letters landed in `rc.1`. Space encryption and the 64-bit checksum
+landed in `rc.2`. Versioned ciphertext, encrypted packaging, length-hiding
+padding, and full-random keygen land in `rc.3`.
 
 ## The 95-Symbol Alphabet
 
@@ -31,33 +35,17 @@ ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\',./!@#$%^&*()_+{}|:"<>?`~abcdefghijkl
 
 This gives ENIGMAK a theoretical random IoC floor of `1/95 ~= 0.01053`.
 
-Two consequences matter in practice:
+Two practical consequences:
 
-- Mixed-case strings survive encryption intact because lowercase letters are no
-  longer folded into uppercase.
-- Spaces no longer leak plaintext word boundaries because space is now
-  encrypted like any other symbol.
+- mixed-case strings survive encryption intact
+- spaces no longer leak plaintext word boundaries
 
 Non-ASCII characters are still outside the cipher alphabet and pass through
-unchanged in `rc.2`.
-
-## Keyed Layout Permutations
-
-The ten layout names remain:
-
-```text
-QWERTY, Colemak, Colemak-DH, Dvorak, Workman,
-Norman, Asset, Halmak, AZERTY, QWERTZ
-```
-
-In the current design they are not used as raw ergonomic substitution tables.
-Instead, each layout name seeds an independent key-derived permutation of the
-full 95-symbol alphabet. This keeps the layout labels stable while removing the
- earlier bias from fixed keyboard-shaped mappings.
+unchanged in `rc.3`.
 
 ## Key Material
 
-The core derived values are:
+The core derived values remain:
 
 ```text
 rounds = ((S + R + L + U) mod 999) + 1
@@ -78,19 +66,6 @@ From `keySum`, ENIGMAK derives:
 - the per-layout permutation seeds
 - the position whitening seed
 
-## Rotor Mechanics
-
-The rotor model keeps the Enigma-style idea that state evolves per character,
-but most of the mechanics are custom:
-
-- rotor positions are base-95 instead of base-26
-- stepping is gated by a key-derived boolean mask
-- the combined shift is derived from the entire rotor register
-- the current rotor state is hashed back into the next character's offsets
-
-The rotor-state feedback is important. Without it, repeated plaintext under
-chosen-plaintext conditions can reveal exploitable cycle structure.
-
 ## Encryption Pipeline
 
 Per in-alphabet character, the current code performs:
@@ -108,81 +83,81 @@ Per in-alphabet character, the current code performs:
 
 Decryption reverses those operations in reverse order.
 
-Two implementation details are easy to miss:
+Two implementation details matter:
 
 - characters outside the built-in alphabet pass through unchanged and do not
   advance the rotor register
-- the browser UI and module API expect ciphertext to include the embedded
-  checksum, so decryption strips the checksum first and verifies it afterward
+- because ciphertext is punctuation-heavy, dropping or normalizing even one
+  in-alphabet character during transfer can desync the rest of decryption; the
+  shipped UI and CLI now warn on suspicious clipboard-normalized punctuation
+  and non-ASCII paste damage
 
-## Position Whitening
+## RC.3 Ciphertext Packaging
 
-Position whitening was added to break the old periodicity leak caused by the
-step mask repeating modulo the alphabet length.
-
-The whitening stream uses a key-derived 32-bit LCG:
-
-```text
-state_0 = keySum XOR 0xC0FFEE42
-state_n+1 = (state_n * 1664525 + 1013904223) mod 2^32
-```
-
-For encryption, `state mod 95` is added to the final symbol index. Decryption
-subtracts the same offset first.
-
-This gives every processed position a unique offset and breaks the old
-modulo-period correlation.
-
-## The RC.2 Checksum
-
-`rc.2` uses a 64-bit checksum rendered as 10 base-95 characters.
-
-At a high level:
-
-1. Hash `plaintext + "|" + keyStr + "|chk64"` with 64-bit FNV-1a over UTF-8
-   bytes.
-2. Advance a 64-bit LCG ten times, xoring the loop index into the state before
-   each step.
-3. Emit one alphabet character per step via `state mod 95`.
-4. Insert those 10 characters at a key-derived position inside the ciphertext.
-
-The checksum position is still derived from a 32-bit FNV-1a hash of
-`keyStr + "chkpos"`.
-
-This is stronger than the old 4-character checksum, but it is still not the
-same thing as researched authenticated encryption.
-
-## Statistical Profile
-
-The live IoC floor is:
+New ciphertexts begin with:
 
 ```text
-1 / 95 ~= 0.01053
+E3|
 ```
 
-Very short ciphertexts can legitimately show `0.000000` IoC if no in-alphabet
-character repeats. That is expected behavior, not automatically a bug.
+The encrypted rc.3 body carries:
 
-On longer messages, ciphertext should sit near the random floor rather than
-near natural-language plaintext.
+```text
+[len_field:4][plaintext][checksum:10][padding:0..15]
+```
+
+Notes:
+
+- `len_field` is a fixed-width base-95 encoding of plaintext length
+- `checksum` is a 64-bit value rendered as 10 base-95 characters
+- `padding` length is deterministic and keyed:
+  `pad_len = hash64(keyStr + "|" + plaintext + "|padlen") mod 16`
+- padding characters are generated from a keyed 64-bit PRNG seeded with
+  `hash64(keyStr + "|" + plaintext + "|padfill")`
+
+Because the length field and checksum are encrypted with the rest of the body,
+an observer no longer learns exact plaintext length from a fixed visible
+checksum block. They only learn the ciphertext length bucket, which narrows
+plaintext length to a 16-character window.
+
+## Legacy Fallback
+
+Decryptors still accept unheaded `rc.2` ciphertext by:
+
+- locating the visible 10-character checksum at the old key-derived position
+- stripping it before decryption
+- recomputing the old checksum from recovered plaintext
+
+Encryption no longer emits the legacy format.
+
+## Keygen And Key Strength
+
+Default keygen is now full-random across the valid key format:
+
+- enabled layouts: uniform from `1..10`
+- rotors: uniform from `1..13`
+- steck pairs: uniform from `0..47`
+- user rounds: uniform from `1..999`
+- nonce presence: uniform on/off, with a 3-character nonce when present
+
+Built-in strength reporting now separates:
+
+- **key family strength**: theoretical brute-force size for keys of that shape
+- **current key profile**: the specific enabled-layout count, rotor count,
+  steck count, rounds, and nonce state of the live key
+
+This prevents the old fixed-shape `keygen()` behavior from repeatedly showing
+the same `151.5`-bit family metric and looking like a bug.
 
 ## Keyspace
 
-At maximum configuration, ENIGMAK's current keyspace is approximately:
+At maximum configuration, ENIGMAK's current keyspace is still approximately:
 
 ```text
 4.528 x 10^128
 ```
 
 That is about `427` bits.
-
-This figure includes:
-
-- ordered enabled-layout selection
-- rotor layout / position choices
-- up to 47 stecker pairs
-- the `1-999` user-round input
-- the optional built-in 3-character nonce space
 
 ## Historical Weaknesses And Fixes
 
@@ -194,15 +169,16 @@ or during the current branch:
 - the monocharacter oracle was addressed by rotor-state feedback in the
   position offsets
 - word-boundary leakage from plaintext spaces was removed in `rc.2`
+- the exact-length leak from a visible fixed checksum block was reduced in `rc.3`
 
 ## Known Remaining Limits
 
-- Non-ASCII / Unicode is still passthrough in `rc.2`.
+- Non-ASCII / Unicode is still passthrough in `rc.3`.
 - ENIGMAK has not undergone a formal audit.
 - Key reuse remains a bad idea.
 - Browser execution is less trustworthy than dedicated native or hardware
   environments.
-- Authenticated encryption and stronger protocol framing are still future work.
+- The checksum is still not authenticated encryption.
 
 ## Implementations
 

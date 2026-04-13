@@ -1,3 +1,38 @@
+## v3.0.0-rc.3 - Release Candidate 3 (not officially released)
+
+### Breaking Change
+- Ciphertexts from `v3.0.0-rc.2` and earlier are not forward-compatible with
+  the new default emit path. New encryption now writes the versioned `E3|`
+  format with an encrypted payload package.
+
+### New Features
+- **Versioned ciphertext header** - new messages begin with `E3|`.
+- **Encrypted checksum packaging** - plaintext length field, plaintext,
+  64-bit checksum, and deterministic keyed padding are now encrypted together
+  instead of exposing a raw checksum block inside visible ciphertext.
+- **Exact-length leak mitigation** - keyed padding now hides exact plaintext
+  length within a 16-character window.
+- **Full-random default keygen** - Python, JS, and HTML key generation now
+  randomize the full valid key shape instead of reusing a fixed 4-layout /
+  3-rotor / 8-steck profile.
+- **Dual key-strength view** - built-in tools now separate key family strength
+  from the current key profile so repeated fixed-shape values no longer look
+  mysterious.
+
+### Updates
+- Legacy unheaded `rc.2` ciphertext still decrypts through a fallback path.
+- Clipboard-corruption safeguards are now treated as a shipped cross-program
+  feature across HTML, JS, Python, docs, and Electron.
+- Python help text now lists `keystrength` in the top usage block.
+- Browser UI now exposes a one-click `Random Key` action.
+- Browser, docs, and Electron HTML copies are synced from the same root
+  machine file.
+- The top-level docs now reflect the current remaining `v3.0.0` roadmap:
+  Unicode support, proper passphrase KDF work, photo/file encryption,
+  `utils.js` refactor, remaining security tests, and MITM investigation.
+
+---
+
 ## v3.0.0-rc.2 - Release Candidate 2 (not officially released)
 
 ### Breaking Change
@@ -18,6 +53,11 @@
 - Max steck pairs remains 47.
 - IoC floor drops from 1/94 (0.01064) to 1/95 (0.01053).
 - Keyspace at maximum configuration: ~4.528 x 10^128 (~427 bits).
+- HTML, JS, and Python now warn on suspicious clipboard-normalized punctuation,
+  non-ASCII ciphertext paste issues, and checksum mismatches that may come from
+  dropped punctuation during transfer.
+- Browser output copy now reports the exact character count and is labeled as
+  the safe path for preserving punctuation-heavy ciphertext.
 - Electron About dialog updated to reflect 95-symbol alphabet and new keyspace.
 - docs/ and Electron HTML copies synced to the root machine so all shipped
   interfaces use the same 95-symbol alphabet and 64-bit checksum.
@@ -27,7 +67,7 @@
 ## v3.0.0-rc.1 - Release Candidate 1 (not officially released)
 
 ### Breaking Change
-- Ciphertexts from v2.0.0 and earlier are not compatible with v3.0.0-rc.1.
+- Ciphertexts from v2.0.0 and earlier are not compatible with v3.0.0.
   The alphabet has been expanded from 68 to 94 symbols. All existing
   messages must be re-encrypted.
 

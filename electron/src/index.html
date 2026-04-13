@@ -126,6 +126,8 @@
   .stat-chip span{color:var(--green);}
   .stat-chip span.amb{color:var(--amber);}
   .stat-chip span.red{color:var(--red);}
+  .stat-chip.warn{color:var(--amber);}
+  .stat-chip.err{color:var(--red);}
 
   /* KEY SYSTEM */
   .key-system{display:flex;flex-direction:column;gap:8px;}
@@ -228,9 +230,11 @@ if (!Math.imul) {
 }
 // Nonce-safe random: works even if Math.random precision is reduced
 function secureRandInt(max) {
+  if (max <= 0) throw new Error('secureRandInt(max) requires max > 0');
   if (window.crypto && window.crypto.getRandomValues) {
     const arr = new Uint32Array(1);
-    window.crypto.getRandomValues(arr);
+    const limit = Math.floor(0x100000000 / max) * max;
+    do { window.crypto.getRandomValues(arr); } while (arr[0] >= limit);
     return arr[0] % max;
   }
   return Math.floor(Math.random() * max);
@@ -279,7 +283,7 @@ function secureRandInt(max) {
 
   <!-- STECKERBRETT -->
   <div class="section">
-    <div class="sec-label">Steckerbrett - click a letter then another to cable them together (max 13 pairs)</div>
+    <div class="sec-label">Steckerbrett - click a symbol then another to cable them together (max 47 pairs)</div>
     <div class="steck-board">
       <div class="steck-alpha" id="steck-alpha"></div>
       <div class="steck-cables" id="steck-cables">
@@ -339,6 +343,7 @@ function secureRandInt(max) {
           <span class="key-val" id="key-val">-</span>
         </div>
         <button class="key-btn" id="copy-key-btn" onclick="copyKey()">Copy Key</button>
+        <button class="key-btn" id="random-key-btn" onclick="randomizeMachineKey()">Random Key</button>
       </div>
       <div class="key-row" style="margin-top:4px;align-items:flex-start;flex-direction:column;gap:6px;">
         <div style="font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);">Passphrase - word encoding of this key</div>
@@ -373,9 +378,10 @@ function secureRandInt(max) {
       <div class="stat-chip" id="key-hint"></div>
       <div class="stat-chip" id="ioc-display"></div>
       <div class="stat-chip" id="strength-display"></div>
+      <div class="stat-chip" id="integrity-display"></div>
       <div class="stat-chip" id="checksum-display"></div>
     </div>
-    <button class="copy-btn" id="copy-btn" onclick="copyOut()">Copy output</button>
+    <button class="copy-btn" id="copy-btn" onclick="copyOut()">Copy exact output</button>
   </div>
 
 </div>
@@ -389,6 +395,22 @@ const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./!@#$%^&*()_+{}|:"
 const N = ALPHA.length; // 95
 const MAX_STECK_PAIRS = Math.floor(N / 2);
 const STEP_MASK_ACTIVE = 66;
+const CIPHERTEXT_HEADER = 'E3|';
+const LEN_FIELD_LEN = 4;
+const MAX_PAD_LEN = 16;
+const CLIPBOARD_NORMALIZATION_MAP = Object.freeze({
+  '\u2018': "'",
+  '\u2019': "'",
+  '\u201C': '"',
+  '\u201D': '"',
+  '\u2013': '-',
+  '\u2014': '-',
+  '\u2212': '-',
+  '\u00A0': ' ',
+  '\u2007': ' ',
+  '\u202F': ' ',
+  '\u2026': '...'
+});
 
 const LAYOUT_DEFS = {
   'QWERTY':      { top:'QWERTYUIOP', home:'ASDFGHJKL;', bot:'ZXCVBNM' },
@@ -433,6 +455,65 @@ let rotors = [
 let nonce = '';
 let userRounds = 13; // user-set base round count (1-999)
 let processedChars = [];
+
+function shuffledCopy(items) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = secureRandInt(i + 1);
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function randomChoice(items) {
+  return items[secureRandInt(items.length)];
+}
+
+function randomizeMachineKey() {
+  const layoutCount = secureRandInt(LAYOUT_NAMES.length) + 1;
+  const enabledIdxs = shuffledCopy([...Array(LAYOUT_NAMES.length).keys()]).slice(0, layoutCount);
+  enabledLayouts = new Set(enabledIdxs.map(i => LAYOUT_NAMES[i]));
+
+  const rotorCount = secureRandInt(13) + 1;
+  rotors = Array.from({ length: rotorCount }, () => ({
+    layout: LAYOUT_NAMES[randomChoice(enabledIdxs)],
+    pos: secureRandInt(N),
+  }));
+
+  const chars = shuffledCopy([...ALPHA]);
+  const pairCount = secureRandInt(MAX_STECK_PAIRS + 1);
+  steckPairs = Array.from({ length: pairCount }, (_, i) => [chars[i * 2], chars[i * 2 + 1]]);
+  steckPending = null;
+
+  userRounds = secureRandInt(999) + 1;
+  const sliderEl = document.getElementById('rounds-slider');
+  if (sliderEl) {
+    sliderEl.value = userRounds;
+    document.getElementById('rounds-slider-val').textContent = userRounds;
+  }
+
+  nonce = secureRandInt(2)
+    ? Array.from({ length: 3 }, () => ALPHA[secureRandInt(N)]).join('')
+    : '';
+  document.getElementById('nonce-val').textContent = displayText(nonce);
+
+  importedKeyData = null;
+  document.getElementById('key-import').value = '';
+  document.getElementById('key-import').className = 'key-import-input';
+  document.getElementById('key-status').textContent = 'OK - full random key loaded';
+  document.getElementById('key-status').className = 'key-status ok';
+
+  buildLayoutGrid();
+  buildRotorSlots();
+  buildSteckBoard();
+  recompute();
+
+  const btn = document.getElementById('random-key-btn');
+  const orig = btn.textContent;
+  btn.textContent = 'Randomized';
+  btn.className = 'key-btn active';
+  setTimeout(() => { btn.textContent = orig; btn.className = 'key-btn'; }, 1500);
+}
 
 // ── Key material derivation (all four upgrades) ───────────────────────────────
 function computeKeyMaterial() {
@@ -533,6 +614,53 @@ function displayChar(char) {
 
 function displayText(text) {
   return text ? [...text].map(displayChar).join('') : '-';
+}
+
+function formatCipherChar(char) {
+  if (char === ' ') return '[space]';
+  if (char === '\n') return '\\n';
+  if (char === '\r') return '\\r';
+  if (char === '\t') return '\\t';
+  return char;
+}
+
+function summarizeCipherIssues(entries) {
+  const shown = entries.slice(0, 4).map(({ pos, char, replacement }) => {
+    const base = `${formatCipherChar(char)}@${pos}`;
+    return replacement === undefined ? base : `${base}->${formatCipherChar(replacement)}`;
+  });
+  if (entries.length > 4) shown.push(`+${entries.length - 4} more`);
+  return shown.join(', ');
+}
+
+function analyzeCiphertextInput(text) {
+  const nonAscii = [];
+  const normalized = [];
+  const controls = [];
+  let outsideAlphabetCount = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (ALPHA.includes(char)) continue;
+    outsideAlphabetCount++;
+    if (Object.prototype.hasOwnProperty.call(CLIPBOARD_NORMALIZATION_MAP, char)) {
+      normalized.push({ pos: i + 1, char, replacement: CLIPBOARD_NORMALIZATION_MAP[char] });
+    }
+    if (char === '\r' || char === '\n' || char === '\t') controls.push({ pos: i + 1, char });
+    if (char.charCodeAt(0) > 127) {
+      nonAscii.push({
+        pos: i + 1,
+        char,
+        replacement: Object.prototype.hasOwnProperty.call(CLIPBOARD_NORMALIZATION_MAP, char)
+          ? CLIPBOARD_NORMALIZATION_MAP[char]
+          : undefined
+      });
+    }
+  }
+  const warnings = [];
+  if (normalized.length) warnings.push(`Suspicious clipboard-normalized punctuation: ${summarizeCipherIssues(normalized)}`);
+  else if (nonAscii.length) warnings.push(`Non-ASCII ciphertext characters detected: ${summarizeCipherIssues(nonAscii)}`);
+  if (controls.length) warnings.push(`Whitespace/control characters detected: ${summarizeCipherIssues(controls)}`);
+  return { length: text.length, outsideAlphabetCount, nonAscii, normalized, controls, warnings };
 }
 
 function steckMap() {
@@ -779,38 +907,96 @@ function addRotor() {
 
 // ── Process & output ─────────────────────────────────────────────────────────
 function recompute() {
-  let input = document.getElementById('input').value;
+  const rawInput = document.getElementById('input').value;
   if (rotors.length === 0) return;
   const keyStr = encodeKey();
-  // In decrypt mode, strip checksum from key-derived position before processing
-  let incomingChecksum = '';
-  if (mode === 'dec' && input.length > CHECKSUM_LEN) {
-    const insertPos = computeChecksumPos(keyStr, input.length);
-    incomingChecksum = input.slice(insertPos, insertPos + CHECKSUM_LEN);
-    input = input.slice(0, insertPos) + input.slice(insertPos + CHECKSUM_LEN);
-  }
+  const inputDiagnostics = analyzeCiphertextInput(rawInput);
   const effectiveRotors = applyNonce(rotors, nonce);
-  const { chars, result, rounds } = processAll(input, effectiveRotors, 0, mode==='dec');
-  processedChars = chars;
-  visActiveIdx = Math.min(visActiveIdx, chars.filter(c=>!c.passthrough).length - 1);
-  let displayResult = result;
-  if (mode === 'enc' && result.length > 0) {
-    const chk = computeChecksum(input, keyStr);
-    const insertPos = computeChecksumPos(keyStr, result.length + CHECKSUM_LEN);
-    displayResult = result.slice(0, insertPos) + chk + result.slice(insertPos);
+  let processInput = rawInput;
+  let detectedFormat = mode === 'dec' && rawInput.startsWith(CIPHERTEXT_HEADER) ? 'rc.3' : 'rc.2-legacy';
+  let incomingChecksum = '';
+  let verification = null;
+
+  if (mode === 'enc') {
+    detectedFormat = 'rc.3';
+    processInput = rawInput ? packRc3Payload(rawInput, keyStr) : '';
+  } else if (detectedFormat === 'rc.3') {
+    processInput = rawInput.startsWith(CIPHERTEXT_HEADER) ? rawInput.slice(CIPHERTEXT_HEADER.length) : rawInput;
+  } else if (processInput.length > CHECKSUM_LEN) {
+    const insertPos = legacyChecksumPos(keyStr, processInput.length);
+    incomingChecksum = processInput.slice(insertPos, insertPos + CHECKSUM_LEN);
+    processInput = processInput.slice(0, insertPos) + processInput.slice(insertPos + CHECKSUM_LEN);
   }
+
+  const { chars, result, rounds } = processAll(processInput, effectiveRotors, 0, mode==='dec');
+  let visibleChars = chars;
+  let displayResult = result;
+
+  if (mode === 'enc') {
+    displayResult = rawInput.length > 0 ? CIPHERTEXT_HEADER + result : '';
+    visibleChars = rawInput.length > 0 ? chars.slice(LEN_FIELD_LEN, LEN_FIELD_LEN + rawInput.length) : [];
+  } else if (detectedFormat === 'rc.3') {
+    verification = unpackRc3Payload(result, keyStr);
+    displayResult = verification.plaintext;
+    visibleChars = verification.structureOk ? chars.slice(LEN_FIELD_LEN, LEN_FIELD_LEN + verification.plaintext.length) : chars;
+  } else {
+    displayResult = result;
+    if (incomingChecksum) {
+      const expectedChk = legacyComputeChecksum(result, keyStr);
+      verification = {
+        verified: incomingChecksum === expectedChk,
+        checksumOk: incomingChecksum === expectedChk,
+        paddingOk: true,
+        structureOk: true,
+        error: incomingChecksum === expectedChk ? null : 'Checksum mismatch',
+      };
+    }
+  }
+
+  processedChars = visibleChars;
+  visActiveIdx = Math.min(visActiveIdx, visibleChars.filter(c=>!c.passthrough).length - 1);
   document.getElementById('output').value = displayResult;
   document.getElementById('output').className = mode==='dec'?'dec-out':'';
-  // Checksum verification in decrypt mode
   const chkVerEl = document.getElementById('checksum-display');
-  if (chkVerEl && mode === 'dec' && incomingChecksum && result.length > 0) {
-    const expectedChk = computeChecksum(result, keyStr);
-    const match = incomingChecksum === expectedChk;
-    chkVerEl.innerHTML = match
-      ? `<span class="checksum-ok">✓ Checksum verified - decryption correct</span>`
-      : `<span class="checksum-fail">✗ Checksum mismatch - wrong key or corrupted message</span>`;
-  } else if (chkVerEl && mode === 'enc') {
+  if (chkVerEl && mode === 'dec' && rawInput.length > 0) {
+    if (detectedFormat === 'rc.3') {
+      if (verification && verification.verified) {
+        chkVerEl.innerHTML = `<span class="checksum-ok">rc.3 verified. Length field, checksum, and padding all match.</span>`;
+      } else if (verification && !verification.structureOk) {
+        chkVerEl.innerHTML = `<span class="checksum-fail">rc.3 package parse failed. Wrong key or corrupted message.</span>`;
+      } else {
+        chkVerEl.innerHTML = `<span class="checksum-fail">rc.3 verification failed. Wrong key or corrupted message.</span>`;
+      }
+    } else if (incomingChecksum) {
+      chkVerEl.innerHTML = verification && verification.verified
+        ? `<span class="checksum-ok">rc.2 legacy checksum verified. Decryption correct.</span>`
+        : `<span class="checksum-fail">rc.2 legacy checksum mismatch. Wrong key or corrupted message.</span>`;
+    } else {
+      chkVerEl.innerHTML = `<span class="checksum-fail">Ciphertext too short to contain a legacy rc.2 checksum.</span>`;
+    }
+  } else if (chkVerEl) {
     chkVerEl.innerHTML = '';
+  }
+  const integrityEl = document.getElementById('integrity-display');
+  if (integrityEl) {
+    integrityEl.className = 'stat-chip';
+    if (mode === 'enc' && displayResult.length > 0) {
+      integrityEl.textContent = `Output: ${displayResult.length} chars | Format: ${CIPHERTEXT_HEADER} rc.3 | Use Copy exact output to preserve punctuation.`;
+    } else if (mode === 'dec' && rawInput.length > 0) {
+      const notes = [`Ciphertext: ${rawInput.length} chars`, `Format: ${detectedFormat}`];
+      if (inputDiagnostics.warnings.length) {
+        integrityEl.className = 'stat-chip warn';
+        notes.push(...inputDiagnostics.warnings);
+      }
+      if (verification && !verification.verified) {
+        integrityEl.className = 'stat-chip warn';
+        if (detectedFormat === 'rc.3' && verification.error) notes.push(verification.error);
+        notes.push('Compare length and watch for dropped punctuation such as backticks (`).');
+      }
+      integrityEl.textContent = notes.join(' | ');
+    } else {
+      integrityEl.textContent = '';
+    }
   }
   // Update rounds display
   const rd = document.getElementById('rounds-display');
@@ -855,20 +1041,30 @@ function calcIoC(text) {
 
 // Key strength in bits
 function calcKeyStrengthBits() {
-  const k = steckPairs.length;
-  // Steck: C(N,2k) * (2k-1)!! / k! for k pairs from the full alphabet
+  const pairCount = steckPairs.length;
   let steckBits = 0;
-  for (let i=N-2*k+1; i<=N; i++) steckBits += Math.log2(i);
-  steckBits -= k; // divide by 2^k (pair order doesn't matter)
-  for (let i=2; i<=k; i++) steckBits -= Math.log2(i);
-  // Rotors: each from 10 layouts * N positions
-  const rotorBits = rotors.length * Math.log2(10 * N);
+  for (let i=N-2*pairCount+1; i<=N; i++) steckBits += Math.log2(i);
+  steckBits -= pairCount;
+  for (let i=2; i<=pairCount; i++) steckBits -= Math.log2(i);
+  const enabledCount = [...enabledLayouts].length;
+  const rotorBits = rotors.length * Math.log2(enabledCount * N);
   let layoutBits = 0;
-  const en = [...enabledLayouts].length;
-  for (let i=0; i<en; i++) layoutBits += Math.log2(10-i);
+  for (let i=0; i<enabledCount; i++) layoutBits += Math.log2(10-i);
   const roundsBits = Math.log2(999);
   const nonceBits = nonce ? 3 * Math.log2(N) : 0;
-  return Math.round(steckBits + rotorBits + layoutBits + roundsBits + nonceBits);
+  const km = computeKeyMaterial();
+  return {
+    familyBits: layoutBits + rotorBits + steckBits + roundsBits + nonceBits,
+    components: { layoutBits, rotorBits, steckBits, roundsBits, nonceBits },
+    profile: {
+      enabledCount,
+      rotorCount: rotors.length,
+      steckPairs: pairCount,
+      baseRounds: userRounds,
+      finalRounds: km.rounds,
+      noncePresent: Boolean(nonce),
+    }
+  };
 }
 
 // ── Key encoding/decoding ────────────────────────────────────────────────────
@@ -1086,9 +1282,13 @@ function updateKeyHint() {
   // Key strength
   const strEl = document.getElementById('strength-display');
   if (strEl) {
-    const bits = calcKeyStrengthBits();
+    const strength = calcKeyStrengthBits();
+    const bits = strength.familyBits;
     const bColor = bits > 100 ? 'color:var(--green)' : bits > 60 ? 'color:var(--amber)' : 'color:var(--red)';
-    strEl.innerHTML = `<span style="color:var(--dim)">Key strength:</span> <span style="${bColor}">${bits} bits</span>`;
+    const profile = strength.profile;
+    strEl.innerHTML =
+      `<span style="color:var(--dim)">Key family:</span> <span style="${bColor}">${bits.toFixed(1)} bits</span> ` +
+      `<span style="color:var(--dim)">(${profile.enabledCount}L/${profile.rotorCount}R/${profile.steckPairs}S/${profile.noncePresent?'nonce':'no-nonce'})</span>`;
   }
 
   // Passphrase display
@@ -1102,16 +1302,9 @@ function updateKeyHint() {
   const chkEl = document.getElementById('checksum-display');
   if (chkEl) {
     const outVal = document.getElementById('output').value;
-    const inVal = document.getElementById('input').value;
-    if (mode === 'dec' && outVal.length >= CHECKSUM_LEN) {
-      // In dec mode: input is ciphertext with appended checksum
-      // We can't verify here easily without re-encrypting - show status from enc side instead
-      chkEl.innerHTML = '';
-    } else if (mode === 'enc' && outVal.length > CHECKSUM_LEN) {
-      const chkPos = computeChecksumPos(encodeKey(), outVal.length);
-      const chkDisplay = outVal.slice(chkPos, chkPos + CHECKSUM_LEN);
-      chkEl.innerHTML = `<span style="color:var(--dim)">Checksum:</span> <span style="color:var(--blue)">${displayText(chkDisplay)}</span> <span style="color:var(--dim)">(position ${chkPos}, key-derived, 64-bit)</span>`;
-    } else {
+    if (mode === 'enc' && outVal.startsWith(CIPHERTEXT_HEADER)) {
+      chkEl.innerHTML = `<span style="color:var(--dim)">rc.3:</span> <span style="color:var(--blue)">encrypted length field + 64-bit checksum + keyed padding</span>`;
+    } else if (mode !== 'dec') {
       chkEl.innerHTML = '';
     }
   }
@@ -1136,7 +1329,7 @@ function copyOut() {
   const val=document.getElementById('output').value; if(!val) return;
   copyToClipboard(val);
   const btn=document.getElementById('copy-btn'), orig=btn.textContent;
-  btn.textContent='Copied!'; setTimeout(()=>{btn.textContent=orig;},1400);
+  btn.textContent=`Copied ${val.length} chars`; setTimeout(()=>{btn.textContent=orig;},1600);
 }
 
 
@@ -1308,7 +1501,7 @@ function lcg64(v) {
 // ── Encrypted checksum helpers (reserved for v3.0.0) ────────────────────────────
 // These functions run checksum characters through the full cipher pipeline,
 // making the checksum statistically indistinguishable from regular ciphertext.
-// Currently unused -- wired for v3.0.0 encrypted checksum feature.
+// Currently unused. rc.3 uses the encrypted payload package instead.
 function _runChecksumChars(chars, wstate, rs, km, enc) {
   // Run checksum chars through the cipher pipeline (encrypt or decrypt)
   const steckM = steckMap();
@@ -1365,20 +1558,149 @@ function _rotorStateHash(rs) {
 
 function applySteck(c, sm) { return sm[c] ?? c; }
 
-function computeChecksumPos(keyStr, totalLen) {
-  // Derive insertion position from key - not always the end
-  const h = hashStr(keyStr + 'chkpos');
-  return h % Math.max(1, totalLen - CHECKSUM_LEN);
+function encodeBase95Int(value, width) {
+  if (value < 0) throw new Error('Base-95 encoding requires a non-negative integer');
+  const chars = Array(width).fill('0');
+  let current = value;
+  for (let i = width - 1; i >= 0; i--) {
+    chars[i] = ALPHA[current % N];
+    current = Math.floor(current / N);
+  }
+  if (current !== 0) throw new Error(`Value exceeds ${width} base-95 characters`);
+  return chars.join('');
 }
 
-function computeChecksum(plaintext, keyStr) {
+function decodeBase95Int(text) {
+  let value = 0;
+  for (const ch of text) {
+    const idx = ALPHA.indexOf(ch);
+    if (idx < 0) throw new Error(`Non-alphabet character in base-95 field: ${JSON.stringify(ch)}`);
+    value = value * N + idx;
+  }
+  return value;
+}
+
+function encodeLengthField(length) {
+  return encodeBase95Int(length, LEN_FIELD_LEN);
+}
+
+function decodeLengthField(field) {
+  if (field.length !== LEN_FIELD_LEN) throw new Error(`Length field must be ${LEN_FIELD_LEN} characters`);
+  return decodeBase95Int(field);
+}
+
+function computeChecksum(plaintext, keyStr, lenField = null) {
+  const field = lenField ?? encodeLengthField(plaintext.length);
+  let out = '';
+  let v = hashStr64(field + '|' + plaintext + '|' + keyStr + '|chk64');
+  for (let i = 0; i < CHECKSUM_LEN; i++) {
+    v = lcg64(v ^ BigInt(i));
+    out += ALPHA[Number(v % BigInt(N))];
+  }
+  return out;
+}
+
+function legacyComputeChecksum(plaintext, keyStr) {
   let out = '';
   let v = hashStr64(plaintext + '|' + keyStr + '|chk64');
   for (let i = 0; i < CHECKSUM_LEN; i++) {
     v = lcg64(v ^ BigInt(i));
-    out += ALPHA[Number(v % BigInt(N))]; // full 95-char alphabet - blends with cipher output
+    out += ALPHA[Number(v % BigInt(N))];
   }
   return out;
+}
+
+function legacyChecksumPos(keyStr, totalLen) {
+  const h = hashStr(keyStr + 'chkpos');
+  return h % Math.max(1, totalLen - CHECKSUM_LEN);
+}
+
+function computePadLength(plaintext, keyStr) {
+  return Number(hashStr64(keyStr + '|' + plaintext + '|padlen') % BigInt(MAX_PAD_LEN));
+}
+
+function generatePadding(plaintext, keyStr, padLen = null) {
+  const targetLen = padLen ?? computePadLength(plaintext, keyStr);
+  if (targetLen === 0) return '';
+  let out = '';
+  let v = hashStr64(keyStr + '|' + plaintext + '|padfill');
+  for (let i = 0; i < targetLen; i++) {
+    v = lcg64(v ^ BigInt(i));
+    out += ALPHA[Number(v % BigInt(N))];
+  }
+  return out;
+}
+
+function packRc3Payload(plaintext, keyStr) {
+  const lenField = encodeLengthField(plaintext.length);
+  const checksum = computeChecksum(plaintext, keyStr, lenField);
+  const padding = generatePadding(plaintext, keyStr);
+  return lenField + plaintext + checksum + padding;
+}
+
+function unpackRc3Payload(payload, keyStr) {
+  const minLen = LEN_FIELD_LEN + CHECKSUM_LEN;
+  if (payload.length < minLen) {
+    return {
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      lengthField: '',
+      padding: '',
+      error: `Payload too short for rc.3 package (${payload.length} chars)`,
+    };
+  }
+
+  const lengthField = payload.slice(0, LEN_FIELD_LEN);
+  let plaintextLength;
+  try {
+    plaintextLength = decodeLengthField(lengthField);
+  } catch (error) {
+    return {
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      lengthField,
+      padding: '',
+      error: error.message,
+    };
+  }
+
+  const remaining = payload.slice(LEN_FIELD_LEN);
+  if (plaintextLength > remaining.length - CHECKSUM_LEN) {
+    return {
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      lengthField,
+      padding: '',
+      error: `Length field decodes to ${plaintextLength}, but payload only has ${remaining.length} chars after the header`,
+    };
+  }
+
+  const plaintext = remaining.slice(0, plaintextLength);
+  const checksum = remaining.slice(plaintextLength, plaintextLength + CHECKSUM_LEN);
+  const padding = remaining.slice(plaintextLength + CHECKSUM_LEN);
+  const checksumOk = checksum === computeChecksum(plaintext, keyStr, lengthField);
+  const expectedPadLen = computePadLength(plaintext, keyStr);
+  const expectedPadding = generatePadding(plaintext, keyStr, expectedPadLen);
+  const paddingOk = padding.length === expectedPadLen && padding === expectedPadding;
+  return {
+    plaintext,
+    verified: checksumOk && paddingOk,
+    checksumOk,
+    paddingOk,
+    structureOk: true,
+    lengthField,
+    padding,
+    error: checksumOk && paddingOk ? null : 'Checksum or padding verification failed',
+  };
 }
 
 
