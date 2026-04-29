@@ -1,3 +1,58 @@
+## v3.0.0-rc.4 - Release Candidate 4 (not officially released)
+
+### Highlights
+- **Synced rc.4 runtime bundle** - the root browser build, mirrored docs build,
+  Electron HTML build, JS module, and Python CLI now all ship the same
+  `rc.4-hidden` encryption and verification behavior.
+
+### Breaking Change
+- Newly emitted ciphertext now uses the `rc.4-hidden` format instead of the
+  visible `E3|` `rc.3` header path. New encryption output is intentionally not
+  forward-compatible with `rc.3` emitters.
+
+### New Features
+- **Hidden metadata ciphertext** - new messages hide version + checksum data as
+  scattered zero-width carrier symbols instead of exposing a visible version
+  header.
+- **Visible body packaging** - the active visible payload is now
+  `[format_tag:1][len_field:4][plaintext][padding]`.
+- **Continued-state hidden metadata** - hidden metadata encryption continues
+  directly from the visible-body cipher state instead of using a separate
+  visible package path.
+- **Version-aware copy diagnostics** - browser, JS, and Python builds now
+  surface hidden-carrier counts and warn when metadata appears stripped.
+- **Accordion browser UI** - Layouts, Rotors, Steckerbrett, and Key are now
+  expanded-by-default collapsible panels in the root, docs, and Electron HTML
+  builds.
+
+### Security / Core Updates
+- **64-bit current-path derivation** - current key-derived rotor-state hashing,
+  permutation seeding, step-mask seeding, whitening, and related seeded math
+  now use 64-bit state in JS and Python.
+- **Checksum-driven padding** - visible padding now depends on plaintext, key,
+  checksum, and version, and new messages always emit at least one visible
+  padding character.
+- **Hidden carrier encoding** - each hidden metadata character is encoded into
+  four zero-width symbols from `U+200B`, `U+200C`, `U+200D`, and `U+2060`
+  using a keyed permutation.
+- **Concrete-key-weighted keygen** - default keygen in Python, JS, and HTML now
+  samples profiles by exact concrete key count before sampling within the chosen
+  profile.
+
+### Compatibility
+- Decryptors still accept headed `rc.3` ciphertext through the legacy path.
+- Decryptors still accept legacy unheaded `rc.2` ciphertext through the old
+  checksum-strip fallback.
+- Stripping zero-width metadata from new ciphertext now fails explicitly as
+  `Hidden metadata missing or stripped from ciphertext`.
+
+### UX
+- HTML defaults now start at `0 000 0 001`.
+- The old marketing tagline was removed from the HTML builds.
+- `Copy exact output` messaging now emphasizes preserving invisible metadata.
+
+---
+
 ## v3.0.0-rc.3 - Release Candidate 3 (not officially released)
 
 ### Breaking Change
