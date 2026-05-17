@@ -1,10 +1,10 @@
-# ENIGMAK v3.0.0-rc.4 Formal Specification
+# ENIGMAK v3.0.0-rc.5 Formal Specification
 
 ## 1. Overview
 
 ENIGMAK is a symmetric, stateful, character-by-character
 substitution-permutation rotor cipher operating over a 95-symbol ASCII
-alphabet. Release candidate `v3.0.0-rc.4` emits new ciphertext in the
+alphabet. Release candidate `v3.0.0-rc.5` emits new ciphertext in the
 `rc.4-hidden` format, which combines:
 
 - a steckerbrett
@@ -48,6 +48,8 @@ The implementation uses ten stable layout labels:
 
 In the current core, each label seeds an independent key-derived permutation of
 the full alphabet rather than acting as a fixed ergonomic substitution table.
+The reserved static layout definitions cover all printable keyboard rows for
+future tooling, but they do not alter the active keyed permutation path.
 
 ## 4. Key Format
 
@@ -205,10 +207,11 @@ Otherwise, decryptors must:
    - verify version, checksum, and padding
 
 If the visible body parses as current hidden format but hidden carriers are
-missing, decryption must fail explicitly as:
+missing, implementations record the internal reason, corrupt and clear any
+partial plaintext, and return the generic public error:
 
 ```text
-Hidden metadata missing or stripped from ciphertext
+Decryption failed.
 ```
 
 ### 8.3 RC.2 legacy fallback
@@ -223,15 +226,20 @@ visible-checksum `rc.2` path:
 
 ## 9. Key Generation
 
-Default key generation must be uniform over concrete valid keys, not over
-profiles alone.
+Default key generation must avoid fixed-shape output while rejecting weak
+families.
 
-The generator therefore:
+The generator therefore repeatedly:
 
-1. computes exact weights for each allowed profile
-   `(enabledCount, rotorCount, steckCount, noncePresent)`
-2. samples one profile proportional to that exact count
-3. samples uniformly within that chosen profile
+1. samples `enabledCount`, `rotorCount`, `steckCount`, and `noncePresent`
+   randomly from their allowed ranges, or from caller-supplied constraints
+2. samples concrete layouts, rotors, stecker pairs, rounds, and nonce values
+   uniformly inside that profile
+3. computes the resulting key-family strength
+4. accepts the key only if it has at least `213.5` family bits
+
+If caller-supplied constraints make that floor impossible, key generation must
+fail rather than return a weak key.
 
 ## 10. Diagnostics
 
@@ -240,9 +248,39 @@ Implementations should report:
 - hidden carrier count
 - suspicious clipboard-normalized punctuation
 - control-character presence in ciphertext
-- stripped or damaged hidden metadata
+- generic decryption failure without exposing verification details
+- exact hidden carrier count for current ciphertext
 
-## 11. Limits
+## 11. Failure Hygiene
+
+On failed verification, implementations must not return or display partial
+plaintext. They should:
+
+- return the public error `Decryption failed.`
+- blank public plaintext fields
+- corrupt an internal fixed-length buffer of exactly 4096 characters
+- corrupt accessible key material and cipher state before returning
+- clear browser/Electron decrypt output fields before attempting decrypt work,
+  and write plaintext back only after explicit verification success
+
+This is a local failure-handling rule. It does not make the checksum equivalent
+to AEAD.
+
+## 12. Python CLI Input Modes
+
+The Python CLI preserves positional arguments and also supports shell-safe
+ciphertext input:
+
+- `decrypt --from-clipboard KEY`
+- `ioc --from-clipboard`
+- `interactive`
+- bare `python enigmak.py`, which starts interactive mode
+
+Interactive encryption must copy the exact ciphertext to the system clipboard
+when possible. This is required because manual terminal highlighting can omit
+zero-width metadata.
+
+## 13. Limits
 
 - Non-ASCII / Unicode characters remain passthrough.
 - The checksum is an integrity signal, not authenticated encryption.

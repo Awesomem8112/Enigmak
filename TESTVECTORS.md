@@ -1,7 +1,8 @@
 # Test Vectors
 
-These vectors target release candidate `v3.0.0-rc.4`. Its current new-message
-format is `rc.4-hidden`.
+These vectors target release candidate `v3.0.0-rc.5`. Its current new-message
+format remains wire-compatible `rc.4-hidden` with hidden metadata version
+character `4`.
 
 All vectors below use the live 95-symbol alphabet:
 
@@ -21,12 +22,19 @@ This removes the known-plaintext foothold present in earlier rc.4 builds.
 
 Record `rc.4-hidden` ciphertext using escaped JSON-style notation or another
 lossless representation. Copy paths that strip zero-width markers will break
-verification.
+verification. Python interactive encryption copies exact ciphertext to the
+system clipboard because manual terminal highlighting can omit hidden metadata.
 
-## RC.4 Hidden Vector 1
+## RC.5 Hidden Vector 1
 
 **Key:** `01 002103 0 013`  
-**Plaintext:** `HELLOWORLD`  
+**Plaintext JSON:** `"HELLOWORLD"`  
+**Plaintext literal:**
+
+```text
+HELLOWORLD
+```
+
 **Ciphertext (escaped):**
 
 ```text
@@ -36,10 +44,17 @@ verification.
 **Visible body:** `T>z%+;*Db">~+}N2c/ `  
 **Hidden carrier count:** `44`
 
-## RC.4 Hidden Vector 2
+## RC.5 Hidden Vector 2
 
 **Key:** `01 002103 0 013`  
-**Plaintext:** `UPPER lower [] {} \`~ with spaces\nand newline`  
+**Plaintext JSON:** `"UPPER lower [] {} `~ with spaces\nand newline"`  
+**Plaintext literal:** the `\n` in the JSON above is one actual newline character, not the two characters backslash + `n`. There is no backslash before the backtick.
+
+```text
+UPPER lower [] {} `~ with spaces
+and newline
+```
+
 **Ciphertext (escaped):**
 
 ```text
@@ -55,10 +70,16 @@ T>z%!qkM3F 7#iSuTdC-g{V47}M%k!@MPqQ!l
 
 **Hidden carrier count:** `44`
 
-## RC.4 Hidden Vector 3
+## RC.5 Hidden Vector 3
 
 **Key:** `123 100200 0 050`  
-**Plaintext:** `Hello World`  
+**Plaintext JSON:** `"Hello World"`  
+**Plaintext literal:**
+
+```text
+Hello World
+```
+
 **Ciphertext (escaped):**
 
 ```text
@@ -88,12 +109,15 @@ Decryptors must still accept old unheaded ciphertext.
 
 ## Verification Checklist
 
-A correct `v3.0.0-rc.4` implementation must:
+A correct `v3.0.0-rc.5` implementation must:
 
 1. Produce the exact ciphertext above for the same plaintext and key.
 2. Emit new ciphertext without a visible `E3|` header.
 3. Preserve exactly `44` hidden carrier symbols on new messages.
-4. Fail new-message verification with `Hidden metadata missing or stripped from ciphertext` when those carriers are removed.
+4. Fail new-message verification with the generic public error `Decryption failed.` when those carriers are removed.
 5. Continue decrypting the rc.3 and rc.2 legacy samples correctly.
 6. Preserve zero-width markers during copy, file export, and cross-runtime transport.
 7. Compute the rc.4 checksum over the visible ciphertext using `deriveMacSubkey(keyStr)`, not over the plaintext.
+8. Interoperate both ways between Python and JavaScript for current `rc.4-hidden` ciphertext.
+9. Keep failure-path corruption buffers fixed at exactly 4096 characters.
+10. Generate default random keys with at least `213.5` family bits.

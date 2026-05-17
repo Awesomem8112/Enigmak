@@ -22,12 +22,16 @@ public scrutiny.
 - **Not formally audited.** ENIGMAK has not undergone professional
   cryptanalytic review.
 - **Non-ASCII passthrough.** Characters outside the 95-symbol built-in ASCII
-  alphabet still pass through unchanged in `v3.0.0-rc.4`.
+  alphabet still pass through unchanged in `v3.0.0-rc.5`.
 - **Key reuse.** Reusing a key across messages creates correlated ciphertext
   and is strongly discouraged.
 - **Checksum is not AEAD.** The current `rc.4-hidden` path protects version,
   checksum, and keyed padding more cleanly than older visible packaging, but
   it is still not a substitute for researched authenticated encryption.
+- **Zero-width metadata transport.** New ciphertext depends on 44 invisible
+  metadata carriers. Use exact copy/export paths; terminal highlighting can
+  omit those characters. Python interactive encryption now copies exact output
+  to the system clipboard to avoid this failure mode.
 - **Meet-in-the-middle.** A theoretical MITM attack may still be possible if
   the diffusion and scramble layers are not strong enough in aggregate.
 - **Browser environment.** Running in a browser is less secure than dedicated
@@ -49,6 +53,13 @@ public scrutiny.
   encrypted `E3|` payload.
 - Visible format leakage was further reduced in `v3.0.0-rc.4` by moving
   version + checksum data into hidden zero-width carrier metadata.
+- Decryption oracle detail was reduced in `v3.0.0-rc.5` by returning a generic
+  failure message and blank plaintext on verification failure.
+- Browser/Electron stale-output exposure was fixed in `v3.0.0-rc.5` by clearing
+  decrypt outputs before attempting decrypt work and by hard-gating final output
+  writes on successful verification.
+- Failure-path corruption was fixed at exactly 4096 characters in `v3.0.0-rc.5`
+  so the amount of local overwrite work is independent of message length.
 
 ## Recommended Usage
 
@@ -58,6 +69,9 @@ public scrutiny.
 - Verify the key fingerprint verbally before use.
 - Prefer the `rc.4-hidden` format for all new messages.
 - Preserve zero-width metadata when copying or exporting ciphertext.
+- Prefer clipboard or interactive mode for Python CLI decryption of real
+  ciphertext, and rely on the interactive encryption clipboard copy rather than
+  manually highlighting terminal output.
 - Treat the current checksum as an integrity hint, not as authenticated
   encryption.
 - Do not use ENIGMAK for classified, medical, legal, or life-critical

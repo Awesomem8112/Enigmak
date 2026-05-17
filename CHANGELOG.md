@@ -1,3 +1,38 @@
+## v3.0.0-rc.5 - Release Candidate 5
+
+### Highlights
+- **Wire-compatible rc.5 hardening** - new ciphertext remains `rc.4-hidden`
+  with hidden version character `4`, so rc.4 and rc.5 ciphertext are identical
+  on the wire.
+- **Shell-safe Python input** - `decrypt` and `ioc` now support
+  `--from-clipboard`, bare `python enigmak.py` opens interactive mode, and
+  interactive encryption writes exact ciphertext to the system clipboard so
+  zero-width metadata survives copy/paste.
+- **Generic decrypt failures** - Python, JS, browser, and Electron runtimes now
+  return `Decryption failed.` with blank plaintext on failed verification.
+- **Failure-path buffer corruption** - partial decrypted buffers are overwritten
+  internally before failed decrypts return. The corruption buffer is fixed at
+  exactly 4096 characters regardless of message length, and HTML/Electron
+  outputs clear immediately on failed or thrown decrypt paths.
+- **Fail-closed browser and Electron decrypt UI** - tampered visible or hidden
+  ciphertext no longer leaves stale plaintext in the output textarea.
+- **Random keygen floor** - default key generation now samples random key
+  profiles and accepts only keys with at least 213.5 family bits, eliminating
+  repeated fixed-strength key shapes.
+- **Expanded static layout definitions** - the reserved layout maps now cover
+  number rows, brackets, quotes, and punctuation without changing active cipher
+  logic.
+
+### UX
+- Plaintext and ciphertext textareas resize vertically in the root, docs, and
+  Electron HTML builds.
+- Electron and CLI branding now reports `v3.0.0-rc.5`.
+- `layout_bias_check.py` now checks rc.5 layout bijectivity, keygen variation,
+  the 213.5-bit generated-key floor, fixed corruption length, and tamper
+  fail-closed behavior.
+
+---
+
 ## v3.0.0-rc.4 - Release Candidate 4 (not officially released)
 
 ### Highlights

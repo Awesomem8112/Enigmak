@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v3.0.0-rc.4 - JavaScript module
+ * ENIGMAK v3.0.0-rc.5 - JavaScript module
  * 95-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -29,6 +29,9 @@ const RC4_VERSION_CHAR = '4';
 const HIDDEN_METADATA_LEN = 1 + CHECKSUM_LEN;
 const HIDDEN_CHUNK_LEN = 4;
 const HIDDEN_SYMBOL_COUNT = HIDDEN_METADATA_LEN * HIDDEN_CHUNK_LEN;
+const GENERIC_DECRYPT_ERROR = 'Decryption failed.';
+const MAX_CORRUPT_LEN = 4096;
+const MIN_GENERATED_KEY_BITS = 213.5;
 const U64_MASK = (1n << 64n) - 1n;
 const FNV64_OFFSET = 0xcbf29ce484222325n;
 const FNV64_PRIME = 0x100000001b3n;
@@ -63,33 +66,97 @@ const LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
                       'Norman','Asset','Halmak','AZERTY','QWERTZ'];
 
 const LAYOUT_DEFS = {
-  'QWERTY':    {top:'QWERTYUIOP', home:'ASDFGHJKL;', bot:'ZXCVBNM'},
-  'Colemak':   {top:'QWFPGJLUY;', home:'ARSTDHNEIO', bot:'ZXCVBKM'},
-  'Colemak-DH':{top:'QWFPBJLUY;', home:'ARSTGMNEIO', bot:'ZXCDVKH'},
-  'Dvorak':    {top:"',.PYFGCRL", home:'AOEUIDHTNS', bot:';QJKXBM'},
-  'Workman':   {top:'QDRWBJFUP;', home:'ASHTGYNEOI', bot:'ZXMCVKL'},
-  'Norman':    {top:'QWDFKJURL;', home:'ASETGYNIOH', bot:'ZXCVBPM'},
-  'Asset':     {top:'QWJFGYPUL;', home:'ASETDHNIOR', bot:'ZXCVBKM'},
-  'Halmak':    {top:'WLRBJZFUO;', home:'SHNTMEDAIC', bot:'QGVXPKY'},
-  'AZERTY':    {top:'AZERTYUIOP', home:'QSDFGHJKL;', bot:'WXCVBNM'},
-  'QWERTZ':    {top:'QWERTZUIOP', home:'ASDFGHJKL;', bot:'YXCVBNM'},
+  'QWERTY': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'qwertyuiop[]\\QWERTYUIOP{}|',
+    home: "asdfghjkl;'ASDFGHJKL:\"",
+    bot: 'zxcvbnm,./ZXCVBNM<>?',
+  },
+  'Colemak': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'qwfpgjluy;[]\\QWFPGJLUY:{}|',
+    home: "arstdhneio'ARSTDHNEIO\"",
+    bot: 'zxcvbkm,./ZXCVBKM<>?',
+  },
+  'Colemak-DH': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'qwfpbjluy;[]\\QWFPBJLUY:{}|',
+    home: "arstgmneio'ARSTGMNEIO\"",
+    bot: 'zxcdvkh,./ZXCDVKH<>?',
+  },
+  'Dvorak': {
+    topTop: '`1234567890[]~!@#$%^&*(){}',
+    top: "',.pyfgcrl/=\\\"<>PYFGCRL?+|",
+    home: 'aoeuidhtns-AOEUIDHTNS_',
+    bot: ';qjkxbmwvz:QJKXBMWVZ',
+  },
+  'Workman': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'qdrwbjfup;[]\\QDRWBJFUP:{}|',
+    home: "ashtgyneoi'ASHTGYNEOI\"",
+    bot: 'zxmcvkl,./ZXMCVKL<>?',
+  },
+  'Norman': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'qwdfkjurl;[]\\QWDFKJURL:{}|',
+    home: "asetgynioh'ASETGYNIOH\"",
+    bot: 'zxcvbpm,./ZXCVBPM<>?',
+  },
+  'Asset': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'qwjfgypul;[]\\QWJFGYPUL:{}|',
+    home: "asetdhnior'ASETDHNIOR\"",
+    bot: 'zxcvbkm,./ZXCVBKM<>?',
+  },
+  'Halmak': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'wlrbjzfuo;[]\\WLRBJZFUO:{}|',
+    home: "shntmedaic'SHNTMEDAIC\"",
+    bot: 'qgvxpky,./QGVXPKY<>?',
+  },
+  'AZERTY': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'azertyuiop[]\\AZERTYUIOP{}|',
+    home: "qsdfghjkl;'QSDFGHJKL:\"",
+    bot: 'wxcvbnm,./WXCVBNM<>?',
+  },
+  'QWERTZ': {
+    topTop: '`1234567890-=~!@#$%^&*()_+',
+    top: 'qwertzuiop[]\\QWERTZUIOP{}|',
+    home: "asdfghjkl;'ASDFGHJKL:\"",
+    bot: 'yxcvbnm,./YXCVBNM<>?',
+  },
 };
 
-const QT = 'QWERTYUIOP';
-const QH = 'ASDFGHJKL;';
-const QB = 'ZXCVBNM';
+const QTT = '`1234567890-=~!@#$%^&*()_+';
+const QT = 'qwertyuiop[]\\QWERTYUIOP{}|';
+const QH = "asdfghjkl;'ASDFGHJKL:\"";
+const QB = 'zxcvbnm,./ZXCVBNM<>?';
 
 function buildMap(name) {
   const def = LAYOUT_DEFS[name];
   const map = {};
-  [...QT].forEach((q, i) => {
-    if (def.top[i] && ALPHA.includes(def.top[i].toUpperCase())) map[q] = def.top[i].toUpperCase();
-  });
-  [...QH].forEach((q, i) => {
-    if (def.home[i] && ALPHA.includes(def.home[i].toUpperCase())) map[q] = def.home[i].toUpperCase();
-  });
-  [...QB].forEach((q, i) => {
-    if (def.bot[i] && ALPHA.includes(def.bot[i].toUpperCase())) map[q] = def.bot[i].toUpperCase();
+  [
+    [QTT, 'topTop'],
+    [QT, 'top'],
+    [QH, 'home'],
+    [QB, 'bot'],
+  ].forEach(([ref, rowKey]) => {
+    const row = def[rowKey];
+    const refHalf = Math.floor(ref.length / 2);
+    const half = Math.floor(row.length / 2);
+    const refUnshifted = ref.slice(0, refHalf);
+    const refShifted = ref.slice(refHalf);
+    const layUnshifted = row.slice(0, half);
+    const layShifted = row.slice(half);
+    [...refUnshifted].forEach((q, i) => {
+      const c = layUnshifted[i];
+      if (c && ALPHA.includes(c)) map[q] = c;
+    });
+    [...refShifted].forEach((q, i) => {
+      const c = layShifted[i];
+      if (c && ALPHA.includes(c)) map[q] = c;
+    });
   });
   return map;
 }
@@ -100,6 +167,104 @@ LAYOUT_NAMES.forEach((name) => {
   MAPS[name] = buildMap(name);
   INV_MAPS[name] = Object.fromEntries(Object.entries(MAPS[name]).map(([k, v]) => [v, k]));
 });
+
+function corruptBuffer() {
+  let result = '';
+  const arr = new Uint32Array(MAX_CORRUPT_LEN);
+  getCryptoApi().getRandomValues(arr);
+  for (let i = 0; i < MAX_CORRUPT_LEN; i++) {
+    let value = arr[i] % 0x110000;
+    if (value >= 0xd800 && value <= 0xdfff) value = 0xe000 + ((value - 0xd800) % 0x1900);
+    result += String.fromCodePoint(value);
+  }
+  return result;
+}
+
+function randomPermutation() {
+  const items = [...Array(N).keys()];
+  const rng = getCryptoApi();
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = randInt(rng, i + 1);
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  return items;
+}
+
+function randomKeyInt(value) {
+  const arr = new Uint32Array(2);
+  getCryptoApi().getRandomValues(arr);
+  const random = (BigInt(arr[0]) << 32n) | BigInt(arr[1]);
+  return typeof value === 'bigint' ? random : Number(arr[0]);
+}
+
+function corruptKeyMaterial(keyMaterial) {
+  if (!keyMaterial || typeof keyMaterial !== 'object') return;
+  [
+    'keySum', 'keySumLo', 'keySumHi', 'keySumFold', 'macSubkey', 'whiteningSeed', 'rounds',
+    'key_sum', 'key_sum_lo', 'key_sum_hi', 'key_sum_fold', 'mac_subkey', 'whitening_seed',
+  ].forEach((field) => {
+    keyMaterial[field] = randomKeyInt(keyMaterial[field]);
+  });
+  keyMaterial.stepMask = Array.from({ length: N }, () => Boolean(randInt(getCryptoApi(), 2)));
+  keyMaterial.step_mask = Array.from({ length: N }, () => Boolean(randInt(getCryptoApi(), 2)));
+  keyMaterial.transPerm = randomPermutation();
+  keyMaterial.invTransPerm = randomPermutation();
+  keyMaterial.trans_perm = randomPermutation();
+  keyMaterial.inv_trans_perm = randomPermutation();
+  ['layoutMaps', 'invLayoutMaps', 'layout_maps', 'inv_layout_maps'].forEach((field) => {
+    const maps = keyMaterial[field];
+    if (!maps || typeof maps !== 'object') return;
+    Object.keys(maps).forEach((name) => {
+      maps[name] = {};
+    });
+  });
+}
+
+function corruptCipherState(cipherState) {
+  if (!cipherState || typeof cipherState !== 'object') return;
+  if (Array.isArray(cipherState.rotors)) {
+    cipherState.rotors.forEach((rotor) => {
+      if (rotor && typeof rotor === 'object') rotor.pos = randInt(getCryptoApi(), N);
+    });
+  }
+  if (Object.prototype.hasOwnProperty.call(cipherState, 'steckMap')) cipherState.steckMap = {};
+  if (Object.prototype.hasOwnProperty.call(cipherState, 'steck_map')) cipherState.steck_map = {};
+  corruptKeyMaterial(cipherState.km);
+}
+
+function genericDecryptFailure(result, partialText = '', keyStr = null, keyMaterial = null, cipherState = null) {
+  let partialPlaintext = partialText ?? result.plaintext ?? '';
+  let corrupt = corruptBuffer();
+  partialPlaintext = corrupt;
+  corrupt = '';
+  if (keyStr !== null && keyStr !== undefined) keyStr = corruptBuffer();
+  corruptKeyMaterial(keyMaterial);
+  corruptCipherState(cipherState);
+  const failed = {
+    ...result,
+    plaintext: '',
+    verified: false,
+    success: false,
+    checksumOk: false,
+    paddingOk: false,
+    metadataOk: false,
+    versionOk: false,
+    error: GENERIC_DECRYPT_ERROR,
+  };
+  ['payload', 'visiblePayload', 'hiddenCipher', 'hiddenPayload', 'padding', 'lengthField', 'version'].forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(failed, field)) failed[field] = '';
+  });
+  return failed;
+}
+
+function finalizeDecryptResult(result, partialText = '', keyStr = null, keyMaterial = null, cipherState = null) {
+  result.success = Boolean(result.verified);
+  if (result.success) {
+    result.error = null;
+    return result;
+  }
+  return genericDecryptFailure(result, partialText, keyStr, keyMaterial, cipherState);
+}
 
 function hashStr32(s) {
   let h = 2166136261;
@@ -647,7 +812,7 @@ function unpackRc3Payload(payload, keyStr) {
       structureOk: false,
       lengthField: '',
       padding: '',
-      error: `Payload too short for rc.3 package (${payload.length} chars)`,
+      error: GENERIC_DECRYPT_ERROR,
     };
   }
 
@@ -697,7 +862,7 @@ function unpackRc3Payload(payload, keyStr) {
     structureOk: true,
     lengthField,
     padding,
-    error: checksumOk && paddingOk ? null : 'Checksum or padding verification failed',
+    error: checksumOk && paddingOk ? null : GENERIC_DECRYPT_ERROR,
   };
 }
 
@@ -715,7 +880,7 @@ function unpackRc4VisiblePayload(payload) {
       versionOk: false,
       lengthField: '',
       padding: '',
-      error: `Payload too short for rc.4-hidden visible package (${payload.length} chars)`,
+      error: GENERIC_DECRYPT_ERROR,
     };
   }
 
@@ -732,7 +897,7 @@ function unpackRc4VisiblePayload(payload) {
       versionOk: false,
       lengthField: '',
       padding: '',
-      error: 'Visible payload tag does not match rc.4-hidden',
+      error: GENERIC_DECRYPT_ERROR,
     };
   }
 
@@ -1029,7 +1194,8 @@ function decrypt(ciphertext, keyStr) {
     const state = createLegacyCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
     const payload = processLegacySegment(body, state, true);
     const unpacked = unpackRc3Payload(payload, key.keyStr);
-    return { ...unpacked, diagnostics, payload, format: 'rc.3' };
+    const result = { ...unpacked, diagnostics, payload, format: 'rc.3' };
+    return finalizeDecryptResult(result, result.plaintext || payload, key.keyStr, state.km, state);
   }
 
   const rc4State = createCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
@@ -1053,37 +1219,33 @@ function decrypt(ciphertext, keyStr) {
     };
 
     if (extracted.hiddenCarrierCount === 0) {
-      return {
+      return genericDecryptFailure({
         ...baseResult,
-        error: 'Hidden metadata missing or stripped from ciphertext',
-      };
+      }, visibleFields.plaintext, key.keyStr, rc4State.km, rc4State);
     }
 
     if (extracted.hiddenCarrierCount !== HIDDEN_SYMBOL_COUNT) {
-      return {
+      return genericDecryptFailure({
         ...baseResult,
-        error: `Hidden metadata carrier count mismatch (${extracted.hiddenCarrierCount} found, ${HIDDEN_SYMBOL_COUNT} expected)`,
-      };
+      }, visibleFields.plaintext, key.keyStr, rc4State.km, rc4State);
     }
 
     let hiddenCipher;
     try {
       hiddenCipher = decodeHiddenCarrierStream(extracted.carrierStream, key.keyStr);
-    } catch (error) {
-      return {
+    } catch (_) {
+      return genericDecryptFailure({
         ...baseResult,
-        error: error.message,
-      };
+      }, visibleFields.plaintext, key.keyStr, rc4State.km, rc4State);
     }
 
     const hiddenPayload = processSegment(hiddenCipher, rc4State, true);
     if (hiddenPayload.length !== HIDDEN_METADATA_LEN) {
-      return {
+      return genericDecryptFailure({
         ...baseResult,
         hiddenCipher,
         hiddenPayload,
-        error: `Hidden metadata length mismatch (${hiddenPayload.length} chars)`,
-      };
+      }, visibleFields.plaintext, key.keyStr, rc4State.km, rc4State);
     }
 
     const version = hiddenPayload[0];
@@ -1095,7 +1257,7 @@ function decrypt(ciphertext, keyStr) {
     const expectedPadding = versionOk ? generatePadding(visibleFields.plaintext, key.keyStr, paddingSeed, version, expectedPadLen) : '';
     const paddingOk = versionOk && visibleFields.padding.length === expectedPadLen && visibleFields.padding === expectedPadding;
     const verified = versionOk && checksumOk && paddingOk;
-    return {
+    const result = {
       ...baseResult,
       verified,
       checksumOk,
@@ -1105,8 +1267,9 @@ function decrypt(ciphertext, keyStr) {
       hiddenCipher,
       hiddenPayload,
       version,
-      error: verified ? null : (versionOk ? 'Checksum or padding verification failed' : `Unsupported hidden metadata version: ${JSON.stringify(version)}`),
+      error: verified ? null : GENERIC_DECRYPT_ERROR,
     };
+    return finalizeDecryptResult(result, visibleFields.plaintext, key.keyStr, rc4State.km, rc4State);
   }
 
   const pos = legacyChecksumPos(key.keyStr, visibleText.length);
@@ -1115,7 +1278,7 @@ function decrypt(ciphertext, keyStr) {
   const state = createLegacyCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
   const plaintext = processLegacySegment(stripped, state, true);
   const verified = checksum === legacyComputeChecksum(plaintext, key.keyStr);
-  return {
+  const result = {
     plaintext,
     verified,
     checksumOk: verified,
@@ -1126,11 +1289,13 @@ function decrypt(ciphertext, keyStr) {
     diagnostics,
     payload: stripped,
     format: 'rc.2-legacy',
-    error: verified ? null : 'Checksum mismatch',
+    error: verified ? null : GENERIC_DECRYPT_ERROR,
   };
+  return finalizeDecryptResult(result, plaintext, key.keyStr, state.km, state);
 }
 
 function getCryptoApi() {
+  if (globalThis.crypto?.getRandomValues) return globalThis.crypto;
   if (typeof window !== 'undefined' && window.crypto?.getRandomValues) return window.crypto;
   return require('crypto').webcrypto;
 }
@@ -1203,30 +1368,12 @@ function chooseProfile(opts, rng) {
   const rotorChoices = opts.numRotors == null ? [...Array(13).keys()].map((i) => i + 1) : [opts.numRotors];
   const steckChoices = opts.numSteck == null ? [...Array(Math.floor(N / 2) + 1).keys()] : [opts.numSteck];
   const nonceChoices = opts.includeNonce == null ? [false, true] : [Boolean(opts.includeNonce)];
-  const candidates = [];
-  layoutChoices.forEach((layoutCount) => {
-    rotorChoices.forEach((rotorCount) => {
-      steckChoices.forEach((steckCount) => {
-        nonceChoices.forEach((includeNonce) => {
-          candidates.push({
-            layoutCount,
-            rotorCount,
-            steckCount,
-            includeNonce,
-            weight: profileWeight(layoutCount, rotorCount, steckCount, includeNonce),
-          });
-        });
-      });
-    });
-  });
-
-  const totalWeight = candidates.reduce((acc, candidate) => acc + candidate.weight, 0n);
-  let roll = randBelowBigInt(rng, totalWeight);
-  for (const candidate of candidates) {
-    if (roll < candidate.weight) return candidate;
-    roll -= candidate.weight;
-  }
-  return candidates[candidates.length - 1];
+  return {
+    layoutCount: layoutChoices[randInt(rng, layoutChoices.length)],
+    rotorCount: rotorChoices[randInt(rng, rotorChoices.length)],
+    steckCount: steckChoices[randInt(rng, steckChoices.length)],
+    includeNonce: nonceChoices[randInt(rng, nonceChoices.length)],
+  };
 }
 
 function sampleEnabledLayouts(layoutCount, rng) {
@@ -1261,19 +1408,23 @@ function generateKey(opts = {}) {
     throw new Error('userRounds must be between 1 and 999');
   }
 
-  const profile = chooseProfile({ numRotors, numSteck, numLayouts, includeNonce }, rng);
-  const enabledIndexes = sampleEnabledLayouts(profile.layoutCount, rng);
-  const enabled = new Set(enabledIndexes.map((index) => LAYOUT_NAMES[index]));
-  const rotors = Array.from({ length: profile.rotorCount }, () => ({
-    layout: LAYOUT_NAMES[enabledIndexes[randInt(rng, enabledIndexes.length)]],
-    pos: randInt(rng, N),
-  }));
-  const steckPairs = sampleSteckPairs(profile.steckCount, rng);
-  const finalRounds = userRounds ?? (randInt(rng, 999) + 1);
-  const nonce = profile.includeNonce
-    ? Array.from({ length: 3 }, () => ALPHA[randInt(rng, N)]).join('')
-    : '';
-  return encodeKey(enabled, rotors, steckPairs, finalRounds, nonce);
+  for (let attempt = 0; attempt < 10000; attempt++) {
+    const profile = chooseProfile({ numRotors, numSteck, numLayouts, includeNonce }, rng);
+    const enabledIndexes = sampleEnabledLayouts(profile.layoutCount, rng);
+    const enabled = new Set(enabledIndexes.map((index) => LAYOUT_NAMES[index]));
+    const rotors = Array.from({ length: profile.rotorCount }, () => ({
+      layout: LAYOUT_NAMES[enabledIndexes[randInt(rng, enabledIndexes.length)]],
+      pos: randInt(rng, N),
+    }));
+    const steckPairs = sampleSteckPairs(profile.steckCount, rng);
+    const finalRounds = userRounds ?? (randInt(rng, 999) + 1);
+    const nonce = profile.includeNonce
+      ? Array.from({ length: 3 }, () => ALPHA[randInt(rng, N)]).join('')
+      : '';
+    const key = encodeKey(enabled, rotors, steckPairs, finalRounds, nonce);
+    if (calcKeyStrength(parseKey(key)).familyBits >= MIN_GENERATED_KEY_BITS) return key;
+  }
+  throw new Error(`Unable to generate a key with at least ${MIN_GENERATED_KEY_BITS.toFixed(1)} bits using the requested constraints`);
 }
 
 function calcIoC(text) {

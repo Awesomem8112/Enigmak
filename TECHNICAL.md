@@ -1,6 +1,6 @@
 # ENIGMAK Technical Notes
 
-This document describes the current `v3.0.0-rc.4` design at a high level. Its
+This document describes the current `v3.0.0-rc.5` design at a high level. Its
 active new-message format is `rc.4-hidden`. It complements
 `SPECIFICATION.md`, not replaces it.
 
@@ -19,7 +19,7 @@ The current release candidate now uses:
 - position whitening
 - a hidden-metadata ciphertext format with no visible `E3|` prefix
 - 64-bit current-path seeded derivation
-- concrete-key-weighted random key generation
+- random key generation with a 213.5-bit acceptance floor
 
 ## Why RC.4 Changed The Packaging
 
@@ -91,17 +91,40 @@ This does not remove the legacy 32-bit path entirely. Old `rc.3` and `rc.2`
 ciphertext still decrypt through compatibility code that preserves their
 original behavior.
 
+## RC.5 Hardening
+
+`v3.0.0-rc.5` keeps the `rc.4-hidden` wire format unchanged. The hidden
+metadata version character remains `4`.
+
+The release hardens the interfaces around that format:
+
+- Python decrypt and IoC can read ciphertext directly from the clipboard.
+- Bare `python enigmak.py` starts an interactive prompt.
+- Python interactive encryption copies exact ciphertext to the system clipboard,
+  avoiding terminal-selection loss of zero-width metadata.
+- Failed decrypts return the generic error `Decryption failed.` with blank
+  plaintext.
+- Failure paths overwrite partial decrypted buffers before returning with a
+  fixed exactly 4096-character corruption buffer, independent of message
+  length.
+- Browser and Electron decrypt mode clear the output before decrypting and only
+  write plaintext after explicit verification success, preventing stale
+  plaintext after tampering or thrown exceptions.
+- Static keyboard-layout definitions now include all printable keyboard rows
+  for future tooling, while active cipher layout permutations remain keyed and
+  full-alphabet.
+
 ## Keygen Fix
 
-The earlier generators could repeatedly produce the same profile shape, which
-made the displayed key-family size look suspiciously fixed. Current keygen now
-works in two stages:
+Earlier generators could repeatedly produce the same profile shape, which made
+the displayed key-family size look suspiciously fixed. Current keygen now:
 
-1. choose a profile by exact concrete-key count weight
-2. sample uniformly inside that chosen profile
+1. samples profile dimensions randomly from the allowed ranges
+2. samples concrete layouts, rotors, stecker pairs, rounds, and nonce values
+   inside that profile
+3. rejects candidates below 213.5 family bits
 
-That means a weak key shape and a strong key shape are chosen in proportion to
-how many concrete keys each shape actually contains.
+That keeps generated keys varied without accepting low-strength families.
 
 ## Browser UI Notes
 
@@ -114,6 +137,9 @@ The root HTML, docs HTML, and Electron HTML now share the same UI state model:
 - no nonce
 - collapsible Layouts / Rotors / Steckerbrett / Key panels
 - diagnostics that mention hidden carrier counts and stripped metadata
+- vertically resizable input and output text boxes
+- fail-closed decrypt output behavior for corrupt visible text and missing
+  hidden metadata
 
 The browser UI now delegates actual encryption, decryption, key parsing,
 keygen, key strength, and ciphertext diagnostics to the shared `enigmak.js`

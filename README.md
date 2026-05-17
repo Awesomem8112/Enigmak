@@ -11,7 +11,7 @@ those purposes, use AES-256 or another formally audited standard.
 
 ## Current Protocol Snapshot
 
-The current workspace target is `v3.0.0-rc.4`. Its active new-message format
+The current workspace target is `v3.0.0-rc.5`. Its active new-message format
 is `rc.4-hidden`, which uses:
 
 - a 95-symbol alphabet with lowercase and literal space
@@ -25,8 +25,10 @@ is `rc.4-hidden`, which uses:
 - a visible encrypted body with no `E3|` prefix
 - hidden encrypted metadata carrying version + checksum as zero-width markers
 - deterministic keyed padding that depends on plaintext, key, checksum, and version
-- weighted uniform key generation over concrete valid keys
+- random key generation with a `213.5` bit minimum acceptance floor
 - backward-compatible decrypt support for headed `rc.3` and legacy `rc.2`
+- generic public decryption failures with no partial plaintext returned
+- fixed-length 4096-character internal corruption buffers on decrypt failure
 
 ## Features
 
@@ -42,10 +44,15 @@ is `rc.4-hidden`, which uses:
 - **10 keyed layout permutations** - stable layout labels seed independent
   key-derived permutations of the full alphabet.
 - **Key-derived rounds** - `1-999` rounds via `((S + R + L + U) mod 999) + 1`.
-- **Weighted random keygen** - default keygen samples profiles in proportion to
-  their true concrete key counts instead of repeating a fixed-shape family.
+- **Random high-strength keygen** - default keygen samples random key profiles
+  and rejects candidates below `213.5` family bits.
 - **Copy diagnostics** - browser, JS, and Python builds detect hidden carrier
   counts, suspicious clipboard normalization, and likely stripped metadata.
+- **Shell-safe CLI input** - Python decrypt and IoC commands can read directly
+  from the clipboard, bare `python enigmak.py` opens interactive mode, and
+  interactive encryption copies exact ciphertext to the clipboard.
+- **Generic failure surface** - failed decrypts return `Decryption failed.`
+  and blank plaintext while preserving broad diagnostics.
 - **Fully offline** - browser file, Python CLI, and JS module work with no
   network dependency.
 
@@ -54,10 +61,18 @@ is `rc.4-hidden`, which uses:
 1. Open `enigmak.html`, or use the Python CLI or JS module.
 2. Generate or import a key.
 3. Encrypt plaintext to produce an `rc.4-hidden` ciphertext.
-4. Use `Copy exact output` or another lossless plain-text path when moving
+4. Use `Copy exact output`, Python interactive clipboard copy, or another lossless plain-text path when moving
    ciphertext. New messages contain invisible zero-width markers that must be
    preserved exactly.
 5. Share the nonce alongside the ciphertext when one is present.
+
+Python CLI alternatives for shell-sensitive ciphertext:
+
+```bash
+python enigmak.py decrypt --from-clipboard "KEY STRING"
+python enigmak.py ioc --from-clipboard
+python enigmak.py interactive
+```
 
 ## Ciphertext Format
 
@@ -96,14 +111,10 @@ Example default HTML key:
 ## Key Strength And Keygen
 
 Built-in tools show theoretical key-family size in bits plus the current key
-profile. Default keygen now:
-
-1. chooses `(enabledCount, rotorCount, steckCount, noncePresent)` by exact
-   concrete key count weight
-2. samples uniformly within that chosen profile
-
-This removes the old fixed `151.5` bit pattern caused by repeatedly generating
-the same key shape.
+profile. Default keygen now samples random profile dimensions, samples a random
+concrete key inside that profile, and accepts it only when the resulting key
+family is at least `213.5` bits. This removes the old fixed `151.5` bit pattern
+without forcing every generated key into the same maximum-strength shape.
 
 ## Browser UI
 
@@ -113,11 +124,13 @@ The root browser build, docs mirror, and Electron HTML build now:
   and no nonce
 - expose collapsible `Layouts`, `Rotors`, `Steckerbrett`, and `Key` panels
 - warn when hidden carrier counts look damaged or metadata appears stripped
+- let plaintext and ciphertext boxes resize vertically
 
 ## Desktop App
 
 See [electron/](electron/) for the Electron wrapper. The desktop build ships
-the same machine UI and `rc.4` runtime bundle as the root `enigmak.html`.
+the same machine UI and `rc.4-hidden` wire-compatible runtime bundle as the
+root `enigmak.html`.
 
 ## Security Notes
 
@@ -127,6 +140,9 @@ the same machine UI and `rc.4` runtime bundle as the root `enigmak.html`.
 - Verify the key fingerprint verbally before use.
 - The checksum helps detect wrong-key and corruption cases, but it is not a
   replacement for researched authenticated encryption.
+- Failed decrypts deliberately corrupt an internal fixed 4096-character buffer
+  and then clear plaintext outputs. This is a local fail-closed hygiene measure,
+  not a substitute for authenticated encryption.
 - Non-ASCII / Unicode characters still pass through unchanged.
 
 ## GitHub Pages
