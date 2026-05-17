@@ -1,6 +1,6 @@
 # ENIGMAK Desktop App
 
-This folder contains the Electron wrapper for the ENIGMAK `v3.0.0-rc.4`
+This folder contains the Electron wrapper for the ENIGMAK `v3.0.0-rc.5`
 machine.
 
 ## Requirements
@@ -15,8 +15,8 @@ npm install
 npm start
 ```
 
-This launches ENIGMAK as a native desktop window with the same `rc.4` runtime
-bundle used by the root browser build.
+This launches ENIGMAK as a native desktop window with the same `rc.4-hidden`
+wire-compatible runtime bundle used by the root browser build.
 
 ## Build Outputs
 
