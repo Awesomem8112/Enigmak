@@ -1,163 +1,167 @@
 # ENIGMAK Technical Notes
 
-This document describes the current `v3.0.0-rc.5` design at a high level. Its
-active new-message format is `rc.4-hidden`. It complements
-`SPECIFICATION.md`, not replaces it.
+This document describes the current `v3.0.0-rc.6` design at a high level. Its
+active new-message format is `rc.6-stream`. It complements `SPECIFICATION.md`,
+not replaces it.
 
 ## Current Snapshot
 
-The current release candidate now uses:
+The current release candidate uses:
 
-- a 95-symbol ASCII alphabet
+- a **161-symbol** alphabet: 95 legacy printable ASCII symbols plus 66 European
+  extended characters (`N = 161`)
 - literal space as a first-class cipher symbol
-- 1-13 rotors
-- a `66/95` irregular step mask
-- up to 47 stecker pairs
+- **1–18 rotors** with a **`66/161`** irregular step mask
+- up to **`N // 2` (80)** stecker pairs
+- **16** keyed layout labels (10 ergonomic definitions plus 6 reserved national
+  labels)
 - keyed full-alphabet layout permutations
-- keyed 95-position diffusion
+- keyed **161-position** diffusion
 - rotor-state feedback in position offsets
 - position whitening
-- a hidden-metadata ciphertext format with no visible `E3|` prefix
-- 64-bit current-path seeded derivation
-- random key generation with a 213.5-bit acceptance floor
+- **`rc.6-stream`** ciphertext with scattered encrypted checksum characters
+- hidden metadata (version + checksum) encoded as **44** zero-width carriers
+- key-derived **phantom** rotor advancement at carrier positions
+- **64-bit** seeded derivation on the active emit/decrypt path
+- random key generation with a **256-bit** family acceptance floor
+- backward-compatible decrypt for `rc.4-hidden`, headed `rc.3`, and legacy `rc.2`
 
-## Why RC.4 Changed The Packaging
+## Why RC.6 Changed The Wire Format
 
-`rc.3` still exposed its version with a visible `E3|` header. `rc.4-hidden`
-keeps the visible ciphertext looking plain while preserving:
+`rc.4-hidden` encrypted the visible body first, then continued cipher state into
+a separate hidden metadata block. Checksum characters were not scattered through
+the visible stream.
 
-- format versioning
-- checksum verification
-- keyed padding verification
+`rc.6-stream` keeps the same visible payload packing (`H` tag, length field,
+plaintext, keyed padding) and the same hidden metadata semantics (version `5`
+plus 10 checksum symbols), but changes how output is walked:
 
-It does that by splitting output into:
+1. Build a keyed schedule of **payload**, **checksum**, and **carrier** events.
+2. Encrypt payload and checksum symbols through the full cipher pipeline.
+3. At each carrier event, advance state with a key-derived **wildcard** symbol,
+   then emit one zero-width carrier symbol.
+4. Scatter **10** checksum ciphertext characters among visible payload
+   characters instead of appending hidden checksum only after the visible body.
 
-- a visible encrypted body
-- a hidden encrypted metadata stream
+Practical consequence: tampering with a single visible checksum character or any
+carrier must fail verification, not just tampering with a trailing metadata block.
 
-The hidden stream is encoded as scattered zero-width carriers, so the message
-still round-trips through normal text channels as long as those characters are
-preserved exactly.
+## RC.6 Stream Layout
 
-## Visible And Hidden Layers
-
-The visible encrypted body corresponds to:
+Logical content before scheduling:
 
 ```text
-[format_tag][len_field][plaintext][padding]
+visible payload: [format_tag:1][len_field:4][plaintext][padding:0..16]
+checksum body:   10 symbols derived from visible ciphertext + MAC subkey
+hidden metadata: [version:1][checksum:10] -> 44 zero-width carriers
 ```
 
-The hidden encrypted metadata corresponds to:
+The emitted stream length is:
 
 ```text
-[version][checksum]
+len(visible_payload) + 10 + 44
 ```
 
-Important implementation detail: the hidden metadata is encrypted by continuing
-the same cipher state directly after the visible body. It is not a separate
-fresh stream.
+Schedule order is keyed by `plaintext length` and `visible payload length`.
 
-## Zero-Width Carrier Design
+### Phantom wildcards
 
-The carrier alphabet is fixed:
+Carrier positions do not contain alphabet ciphertext. To keep rotor, whitening,
+and index state aligned, encrypt and decrypt each call `process_segment` on a
+key-derived wildcard alphabet character and discard the result, then read or
+write the zero-width carrier.
+
+### Zero-width carriers
+
+Carrier alphabet (fixed):
 
 ```text
 U+200B  U+200C  U+200D  U+2060
 ```
 
-Each hidden metadata character is converted into four base-4 digits, then
-mapped through a keyed permutation of those four symbols. The resulting 44
-carrier symbols are scattered across the ciphertext using a keyed 64-bit PRNG.
+Each hidden metadata alphabet symbol becomes four base-4 digits mapped through a
+keyed permutation of those four code points.
 
-Practical consequence:
+## Key Format (K6)
 
-- if those carriers are removed, the visible body may still decrypt into a
-  plausible plaintext candidate, but verification must fail explicitly
+Generated keys use a `K6:` prefix and base36 indices so rotor positions above 99
+and layout indices above 9 are representable:
+
+```text
+K6:0 000 0 001
+```
+
+Legacy digit-only keys without the `K6:` prefix remain parseable for
+compatibility testing.
+
+## Derived Rounds Floor
+
+User rounds `U` still feed the round-count formula, but the implementation now
+enforces:
+
+```text
+rounds = max(((S + R + L + U) mod 999) + 1, ROUND_MINIMUM)
+```
+
+with `ROUND_MINIMUM = 10`.
 
 ## 64-Bit Current Path
 
-The active `rc.4` emit path moved the remaining seeded derivation logic to
-64-bit state:
+The active `rc.6` path uses 64-bit state for:
 
 - rotor-state hash
 - key sum
-- diffusion seeding
 - step-mask seeding
+- diffusion permutation seeding
 - per-layout permutation seeding
 - whitening stream
-- hidden carrier scatter seeds
+- stream schedule and carrier-wildcard seeds
+- hidden carrier digit permutation
 
-This does not remove the legacy 32-bit path entirely. Old `rc.3` and `rc.2`
-ciphertext still decrypt through compatibility code that preserves their
-original behavior.
+Legacy `rc.3`, `rc.4-hidden`, and `rc.2` decrypt paths retain their historical
+derivation rules on the 95-symbol legacy alphabet where required.
 
-## RC.5 Hardening
+## Keygen
 
-`v3.0.0-rc.5` keeps the `rc.4-hidden` wire format unchanged. The hidden
-metadata version character remains `4`.
+Default key generation:
 
-The release hardens the interfaces around that format:
-
-- Python decrypt and IoC can read ciphertext directly from the clipboard.
-- Bare `python enigmak.py` starts an interactive prompt.
-- Python interactive encryption copies exact ciphertext to the system clipboard,
-  avoiding terminal-selection loss of zero-width metadata.
-- Failed decrypts return the generic error `Decryption failed.` with blank
-  plaintext.
-- Failure paths overwrite partial decrypted buffers before returning with a
-  fixed exactly 4096-character corruption buffer, independent of message
-  length.
-- Browser and Electron decrypt mode clear the output before decrypting and only
-  write plaintext after explicit verification success, preventing stale
-  plaintext after tampering or thrown exceptions.
-- Static keyboard-layout definitions now include all printable keyboard rows
-  for future tooling, while active cipher layout permutations remain keyed and
-  full-alphabet.
-
-## Keygen Fix
-
-Earlier generators could repeatedly produce the same profile shape, which made
-the displayed key-family size look suspiciously fixed. Current keygen now:
-
-1. samples profile dimensions randomly from the allowed ranges
+1. samples profile dimensions (layout count, rotor count, stecker count, nonce
+   flag) from allowed ranges
 2. samples concrete layouts, rotors, stecker pairs, rounds, and nonce values
-   inside that profile
-3. rejects candidates below 213.5 family bits
+3. rejects candidates below **256** family bits
 
-That keeps generated keys varied without accepting low-strength families.
+## Decryption Order
 
-## Browser UI Notes
+Decryptors attempt formats in this order:
 
-The root HTML, docs HTML, and Electron HTML now share the same UI state model:
+1. headed **`rc.3`** (`E3|...`)
+2. **`rc.6-stream`** (44 carriers, hidden metadata version `5`)
+3. **`rc.4-hidden`** (44 carriers, hidden metadata version `4`)
+4. legacy **`rc.2`** visible checksum insertion
 
-- default key `0 000 0 001`
-- `QWERTY` enabled by default
-- one rotor at `00`
-- no steck pairs
-- no nonce
-- collapsible Layouts / Rotors / Steckerbrett / Key panels
-- diagnostics that mention hidden carrier counts and stripped metadata
-- vertically resizable input and output text boxes
-- fail-closed decrypt output behavior for corrupt visible text and missing
-  hidden metadata
+## Browser And Python Interfaces
 
-The browser UI now delegates actual encryption, decryption, key parsing,
-keygen, key strength, and ciphertext diagnostics to the shared `enigmak.js`
-runtime to reduce implementation drift.
+Shared behavior across browser HTML, `enigmak.js`, docs mirror, Electron, and
+Python CLI:
+
+- default key `K6:0 000 0 001` (QWERTY only, one rotor at `00`, no stecker, rounds
+  `001`, no nonce)
+- diagnostics for hidden carrier counts and clipboard normalization warnings
+- fail-closed decrypt output (blank plaintext + `Decryption failed.` on failure)
+- fixed **4096**-character internal corruption buffer on failure paths
+- Python `decrypt --from-clipboard`, `ioc --from-clipboard`, and interactive
+  mode with exact ciphertext clipboard copy on encrypt
 
 ## Compatibility
 
-Decryption order is:
-
-1. headed `rc.3`
-2. hidden `rc.4`
-3. legacy `rc.2`
-
-That keeps old ciphertext readable while allowing new messages to use the
-hidden format.
+- New ciphertext from this build is **`rc.6-stream`** and is not decryptable by
+  `rc.5` emitters.
+- This build still decrypts `rc.4-hidden`, `rc.3`, and `rc.2` ciphertext.
 
 ## Remaining Limits
 
-- Non-ASCII / Unicode is still passthrough.
+- Characters outside `ALPHA` are not reliable for `rc.6-stream` round-trip on the
+  current decrypt path even though encrypt may pass them through.
+- Extended alphabet symbols are not yet mapped in static ergonomic layout tables.
 - The checksum is not authenticated encryption.
 - ENIGMAK still needs formal review.

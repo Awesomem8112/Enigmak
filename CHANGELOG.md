@@ -1,3 +1,34 @@
+## v3.0.0-rc.6 - Release Candidate 6
+
+### Highlights
+- **New rc.6 stream format** - new ciphertext now emits as `rc.6-stream`
+  with version character `5`. The rc.4-hidden decrypt path remains available
+  for rc.4 and rc.5 ciphertext.
+- **Round floor** - derived key material now enforces `ROUND_MINIMUM = 10`
+  so weak key compositions cannot collapse below ten rounds.
+- **European extended alphabet** - the active alphabet expands to 161
+  characters, adding accented letters, Nordic letters, inverted Spanish
+  punctuation, and OE ligatures. These characters participate in the cipher
+  while remaining layout-unassigned until a later release.
+- **Reserved national layouts** - `Spanish`, `Swedish`, `Norwegian`,
+  `Danish`, `Icelandic`, and `Belgian` are reserved in `LAYOUT_NAMES`.
+- **Carrier phantom advancement** - zero-width carrier positions now advance
+  cipher state through key-derived phantom alphabet characters.
+- **Scattered encrypted checksum** - the checksum is encrypted into visible
+  stream positions instead of being carried as a fixed prefix.
+- **K6 key encoding** - generated keys now use a `K6:` prefix with base36
+  indexes so 161 alphabet positions and 16 layout names are representable.
+- **256-bit keygen floor** - default random key generation now rejects
+  candidates below `256` family bits (raised from `213.5`).
+
+### Compatibility
+- New rc.6 ciphertext is not decryptable by rc.5 builds.
+- This build decrypts rc.4-hidden ciphertext through a preserved 95-symbol
+  legacy path.
+- Headed rc.3 and legacy rc.2 decrypt support remain in place.
+
+---
+
 ## v3.0.0-rc.5 - Release Candidate 5
 
 ### Highlights

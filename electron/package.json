@@ -1,11 +1,11 @@
 {
   "name": "enigmak",
-  "version": "3.0.0-rc.5",
-  "description": "ENIGMAK v3.0.0-rc.5 - offline rotor cipher desktop application",
+  "version": "3.0.0-rc.6",
+  "description": "ENIGMAK v3.0.0-rc.6 - offline rotor cipher desktop application",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build-win": "electron-builder --win portable",
+    "build-win": "electron-builder --win portable --x64 --arm64",
     "build-linux": "electron-builder --linux AppImage",
     "build-mac": "electron-builder --mac dmg"
   },
@@ -29,7 +29,7 @@
           ]
         }
       ],
-      "icon": "src/icon.ico"
+      "signAndEditExecutable": false
     },
     "linux": {
       "target": [

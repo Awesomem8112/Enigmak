@@ -1,6 +1,6 @@
 /**
- * ENIGMAK v3.0.0-rc.5 - JavaScript module
- * 95-symbol multi-round substitution-permutation rotor cipher
+ * ENIGMAK v3.0.0-rc.6 - JavaScript module
+ * 161-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
  *   const { encrypt, decrypt, generateKey, calcIoC } = require('./enigmak.js');
@@ -14,24 +14,41 @@
 
 'use strict';
 
-const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' +
-              '!@#$%^&*()_+{}|:"<>?`~' +
-              'abcdefghijklmnopqrstuvwxyz ';
+const LEGACY_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' +
+                     '!@#$%^&*()_+{}|:"<>?`~' +
+                     'abcdefghijklmnopqrstuvwxyz ';
+const EXTENDED_ALPHA = 'ÀàÁáÂâÃãÄäÅåÆæÇçÈèÉéÊêËëÌìÍíÎîÏïÐðÑñÒòÓóÔôÕõÖöØøÙùÚúÛûÜüÝýÞþßÿ¡¿Œœ';
+const ALPHA = LEGACY_ALPHA + EXTENDED_ALPHA;
+// NOTE: Characters above index 94 (U+00C0 and beyond) are European extended
+// characters in temporary layout-unassigned state. They participate fully in
+// all cipher operations except keyboard layout substitution. Full layout
+// integration is planned for a future RC once per-layout positioning research
+// is complete.
+const LEGACY_N = LEGACY_ALPHA.length;
 const N = ALPHA.length;
+if (LEGACY_N !== 95 || N !== 161) throw new Error('ENIGMAK alphabet length mismatch');
 const N_BIG = BigInt(N);
+const LEGACY_N_BIG = BigInt(LEGACY_N);
 const STEP_MASK_ACTIVE = 66;
+const ROUND_MINIMUM = 10;
 const CHECKSUM_LEN = 10;
 const LEN_FIELD_LEN = 4;
 const MAX_PAD_LEN = 16;
 const LEGACY_RC3_HEADER = 'E3|';
 const RC4_FORMAT_TAG = 'H';
 const RC4_VERSION_CHAR = '4';
+const RC6_VERSION_CHAR = '5';
 const HIDDEN_METADATA_LEN = 1 + CHECKSUM_LEN;
 const HIDDEN_CHUNK_LEN = 4;
 const HIDDEN_SYMBOL_COUNT = HIDDEN_METADATA_LEN * HIDDEN_CHUNK_LEN;
 const GENERIC_DECRYPT_ERROR = 'Decryption failed.';
 const MAX_CORRUPT_LEN = 4096;
-const MIN_GENERATED_KEY_BITS = 213.5;
+const MIN_GENERATED_KEY_BITS = 256;
+const KEY_V6_PREFIX = 'K6:';
+const K6_ENCRYPT_REQUIRED_ERROR = 'Encryption requires a K6: key. Legacy keys remain decrypt-only.';
+const BASE36_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const CARRIER_WILDCARD_DOMAIN = '|carrier-wildcards|';
+const STREAM_SCHEDULE_DOMAIN = '|stream-schedule|';
 const U64_MASK = (1n << 64n) - 1n;
 const FNV64_OFFSET = 0xcbf29ce484222325n;
 const FNV64_PRIME = 0x100000001b3n;
@@ -63,7 +80,10 @@ const CLIPBOARD_NORMALIZATION_MAP = Object.freeze({
 });
 
 const LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
-                      'Norman','Asset','Halmak','AZERTY','QWERTZ'];
+                      'Norman','Asset','Halmak','AZERTY','QWERTZ',
+                      // National language layouts. LAYOUT_DEFS entries pending rc.7.
+                      'Spanish','Swedish','Norwegian','Danish','Icelandic','Belgian'];
+const LEGACY_LAYOUT_NAMES = LAYOUT_NAMES.slice(0, 10);
 
 const LAYOUT_DEFS = {
   'QWERTY': {
@@ -136,6 +156,7 @@ const QB = 'zxcvbnm,./ZXCVBNM<>?';
 function buildMap(name) {
   const def = LAYOUT_DEFS[name];
   const map = {};
+  if (!def) return map;
   [
     [QTT, 'topTop'],
     [QT, 'top'],
@@ -294,6 +315,64 @@ function deriveMacSubkey(keyStr) {
   return hashStr64(keyStr + '\x01enigmak-mac').toString();
 }
 
+function encodeBase36Index(value, width) {
+  if (value < 0) throw new Error('Base36 encoding requires a non-negative integer');
+  const chars = new Array(width).fill('0');
+  let current = value;
+  for (let i = width - 1; i >= 0; i--) {
+    chars[i] = BASE36_ALPHABET[current % 36];
+    current = Math.floor(current / 36);
+  }
+  if (current !== 0) throw new Error(`Value exceeds ${width} base36 characters`);
+  return chars.join('');
+}
+
+function decodeBase36Index(text) {
+  let value = 0;
+  for (const char of text.toUpperCase()) {
+    const index = BASE36_ALPHABET.indexOf(char);
+    if (index < 0) throw new Error(`Invalid base36 digit: ${JSON.stringify(char)}`);
+    value = value * 36 + index;
+  }
+  return value;
+}
+
+function deriveCarrierWildcards(keyStr, carrierCount) {
+  let seed = hashStr64(keyStr + CARRIER_WILDCARD_DOMAIN);
+  const wildcards = [];
+  for (let i = 0; i < carrierCount; i++) {
+    seed = lcg64(seed ^ BigInt(i));
+    wildcards.push(ALPHA[Number(seed % N_BIG)]);
+  }
+  return wildcards;
+}
+
+function deriveScheduleSeed(keyStr, plaintextLen) {
+  return hashStr64(keyStr + STREAM_SCHEDULE_DOMAIN + String(plaintextLen));
+}
+
+function buildStreamSchedule(keyStr, plaintextLen, payloadLen) {
+  const remaining = {
+    payload: payloadLen,
+    checksum: CHECKSUM_LEN,
+    carrier: HIDDEN_SYMBOL_COUNT,
+  };
+  let state = deriveScheduleSeed(keyStr, plaintextLen);
+  const schedule = [];
+  const total = remaining.payload + remaining.checksum + remaining.carrier;
+  for (let i = 0; i < total; i++) {
+    state = lcg64(state ^ BigInt(i));
+    const pick = Number(state % BigInt(total - i));
+    let event;
+    if (pick < remaining.checksum) event = 'checksum';
+    else if (pick < remaining.checksum + remaining.carrier) event = 'carrier';
+    else event = 'payload';
+    remaining[event] -= 1;
+    schedule.push(event);
+  }
+  return schedule;
+}
+
 function shuffleIndicesWithSeed(size, seed) {
   const items = [...Array(size).keys()];
   let state = seed & U64_MASK;
@@ -324,7 +403,7 @@ function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   }, 0n);
   const rotorSum = rotors.reduce((acc, rotor) => acc + BigInt(rotor.pos), 0n);
   const layoutSum = [...enabledLayouts].reduce((acc, name) => acc + BigInt(LAYOUT_NAMES.indexOf(name)), 0n);
-  const rounds = Number((steckSum + rotorSum + layoutSum + BigInt(userRounds)) % 999n) + 1;
+  const rounds = Math.max(Number((steckSum + rotorSum + layoutSum + BigInt(userRounds)) % 999n) + 1, ROUND_MINIMUM);
   const keySum = (steckSum * 31n + rotorSum * 17n + layoutSum * 13n) & U64_MASK;
 
   const stepPos = shuffleIndicesWithSeed(N, keySum ^ STEP_MASK_SEED_CONST);
@@ -507,6 +586,59 @@ function processSegment(text, state, decrypt = false) {
   return result;
 }
 
+function legacyKeyedLayoutOffset(name, layoutKeyBase) {
+  return (LEGACY_LAYOUT_NAMES.indexOf(name) * 7 + layoutKeyBase) % LEGACY_N;
+}
+
+function legacyRotorShift(rotors) {
+  let value = 0n;
+  rotors.forEach((rotor, index) => {
+    value += BigInt(rotor.pos) * (LEGACY_N_BIG ** BigInt(rotors.length - 1 - index));
+  });
+  return Number(value % LEGACY_N_BIG);
+}
+
+function legacyAdvanceRotors(rotors, charIndex, stepMask) {
+  if (!stepMask[charIndex % LEGACY_N]) return rotors.map((rotor) => ({ ...rotor }));
+  const next = rotors.map((rotor) => ({ ...rotor }));
+  next[next.length - 1].pos = (next[next.length - 1].pos + 1) % LEGACY_N;
+  for (let i = next.length - 1; i > 0; i--) {
+    if (next[i].pos === 0) next[i - 1].pos = (next[i - 1].pos + 1) % LEGACY_N;
+  }
+  return next;
+}
+
+function legacyApplyNonce(rotors, nonce) {
+  if (!nonce) return rotors;
+  return rotors.map((rotor, index) => {
+    const offset = index < nonce.length ? LEGACY_ALPHA.indexOf(nonce[index]) : 0;
+    return { ...rotor, pos: (rotor.pos + Math.max(offset, 0)) % LEGACY_N };
+  });
+}
+
+function legacyApplyLayout(char, layoutName, shift, invert, layoutMaps, invLayoutMaps) {
+  if (!invert) {
+    let value = layoutMaps[layoutName]?.[char] ?? char;
+    if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[(LEGACY_ALPHA.indexOf(value) + shift) % LEGACY_N];
+    return value;
+  }
+  let value = char;
+  if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[(LEGACY_ALPHA.indexOf(value) - shift + LEGACY_N * 100) % LEGACY_N];
+  return invLayoutMaps[layoutName]?.[value] ?? value;
+}
+
+function legacyPlugFwd(char, layouts, layoutMaps) {
+  let value = char;
+  for (const name of layouts) value = layoutMaps[name]?.[value] ?? value;
+  return value;
+}
+
+function legacyPlugInv(char, layouts, invLayoutMaps) {
+  let value = char;
+  for (let i = layouts.length - 1; i >= 0; i--) value = invLayoutMaps[layouts[i]]?.[value] ?? value;
+  return value;
+}
+
 function lcg32(v) {
   return (Math.imul(v, 1664525) + 1013904223) >>> 0;
 }
@@ -522,52 +654,52 @@ function legacyRotorStateHash(rotors) {
 
 function computeLegacyKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
   const steckSum = steckPairs.reduce((acc, [a, b]) => {
-    const ai = ALPHA.indexOf(a);
-    const bi = ALPHA.indexOf(b);
+    const ai = LEGACY_ALPHA.indexOf(a);
+    const bi = LEGACY_ALPHA.indexOf(b);
     const lo = Math.min(ai, bi);
     const hi = Math.max(ai, bi);
-    return acc + (lo * N + hi);
+    return acc + (lo * LEGACY_N + hi);
   }, 0);
   const rotorSum = rotors.reduce((acc, rotor) => acc + rotor.pos, 0);
-  const layoutSum = [...enabledLayouts].reduce((acc, name) => acc + LAYOUT_NAMES.indexOf(name), 0);
+  const layoutSum = [...enabledLayouts].reduce((acc, name) => acc + LEGACY_LAYOUT_NAMES.indexOf(name), 0);
   const rounds = ((steckSum + rotorSum + layoutSum + userRounds) % 999) + 1;
   const keySum = (steckSum * 31 + rotorSum * 17 + layoutSum * 13) >>> 0;
 
-  const stepPos = [...Array(N).keys()];
+  const stepPos = [...Array(LEGACY_N).keys()];
   let state = (keySum ^ 0x5a5a5a5a) >>> 0;
-  for (let i = N - 1; i > 0; i--) {
+  for (let i = LEGACY_N - 1; i > 0; i--) {
     state = lcg32(state);
     const j = state % (i + 1);
     [stepPos[i], stepPos[j]] = [stepPos[j], stepPos[i]];
   }
-  const stepMask = new Array(N).fill(false);
+  const stepMask = new Array(LEGACY_N).fill(false);
   stepPos.slice(0, STEP_MASK_ACTIVE).forEach((pos) => { stepMask[pos] = true; });
 
-  const transPerm = [...Array(N).keys()];
+  const transPerm = [...Array(LEGACY_N).keys()];
   state = (keySum ^ 0xdead1234) >>> 0;
-  for (let i = N - 1; i > 0; i--) {
+  for (let i = LEGACY_N - 1; i > 0; i--) {
     state = lcg32(state);
     const j = state % (i + 1);
     [transPerm[i], transPerm[j]] = [transPerm[j], transPerm[i]];
   }
-  const invTransPerm = new Array(N);
+  const invTransPerm = new Array(LEGACY_N);
   transPerm.forEach((value, index) => { invTransPerm[value] = index; });
 
   const layoutMaps = {};
   const invLayoutMaps = {};
-  LAYOUT_NAMES.forEach((name, layoutIndex) => {
-    const perm = [...Array(N).keys()];
+  LEGACY_LAYOUT_NAMES.forEach((name, layoutIndex) => {
+    const perm = [...Array(LEGACY_N).keys()];
     let seed = ((keySum ^ (layoutIndex * 0x9E3779B9 + 0xABCD1234)) >>> 0);
-    for (let i = N - 1; i > 0; i--) {
+    for (let i = LEGACY_N - 1; i > 0; i--) {
       seed = lcg32(seed);
       const j = seed % (i + 1);
       [perm[i], perm[j]] = [perm[j], perm[i]];
     }
     const fwd = {};
     const inv = {};
-    for (let i = 0; i < N; i++) {
-      fwd[ALPHA[i]] = ALPHA[perm[i]];
-      inv[ALPHA[perm[i]]] = ALPHA[i];
+    for (let i = 0; i < LEGACY_N; i++) {
+      fwd[LEGACY_ALPHA[i]] = LEGACY_ALPHA[perm[i]];
+      inv[LEGACY_ALPHA[perm[i]]] = LEGACY_ALPHA[i];
     }
     layoutMaps[name] = fwd;
     invLayoutMaps[name] = inv;
@@ -579,7 +711,7 @@ function computeLegacyKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds
     stepMask,
     transPerm,
     invTransPerm,
-    layoutKeyBase: keySum % N,
+    layoutKeyBase: keySum % LEGACY_N,
     layoutMaps,
     invLayoutMaps,
     whiteningSeed: (keySum ^ 0xC0FFEE42) >>> 0,
@@ -589,7 +721,7 @@ function computeLegacyKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds
 function createLegacyCipherState(steckPairs, rotors, enabledLayouts, userRounds, nonce = '') {
   const km = computeLegacyKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds);
   const steckMap = {};
-  for (const char of ALPHA) steckMap[char] = char;
+  for (const char of LEGACY_ALPHA) steckMap[char] = char;
   steckPairs.forEach(([a, b]) => {
     steckMap[a] = b;
     steckMap[b] = a;
@@ -602,7 +734,7 @@ function createLegacyCipherState(steckPairs, rotors, enabledLayouts, userRounds,
     steckMap,
     enabledList,
     unusedLayouts,
-    rotors: applyNonce(rotors.map((rotor) => ({ ...rotor })), nonce),
+    rotors: legacyApplyNonce(rotors.map((rotor) => ({ ...rotor })), nonce),
     whiteningState: km.whiteningSeed,
     alphaIndex: 0,
   };
@@ -616,59 +748,208 @@ function processLegacySegment(text, state, decrypt = false) {
   let result = '';
 
   for (const char of text) {
-    if (!ALPHA.includes(char)) {
+    if (!LEGACY_ALPHA.includes(char)) {
       result += char;
       continue;
     }
 
     const ci = state.alphaIndex;
-    const shiftSeed = rotorShift(state.rotors);
+    const shiftSeed = legacyRotorShift(state.rotors);
     const rsHash = legacyRotorStateHash(state.rotors);
-    const posOffset = ((km.layoutKeyBase * 37 + ci * 13 + rsHash) >>> 0) % N;
+    const posOffset = ((km.layoutKeyBase * 37 + ci * 13 + rsHash) >>> 0) % LEGACY_N;
     const roundLayouts = [];
     const roundShifts = [];
     for (let r = 0; r < rounds; r++) {
       const layoutName = enabledList[r % enabledList.length];
       roundLayouts.push(layoutName);
-      roundShifts.push((shiftSeed + r + ci + posOffset + keyedLayoutOffset(layoutName, km.layoutKeyBase)) % N);
+      roundShifts.push((shiftSeed + r + ci + posOffset + legacyKeyedLayoutOffset(layoutName, km.layoutKeyBase)) % LEGACY_N);
     }
     const scrambleShifts = unusedLayouts.map((name, index) =>
-      (shiftSeed + rounds + index + ci + posOffset + keyedLayoutOffset(name, km.layoutKeyBase)) % N
+      (shiftSeed + rounds + index + ci + posOffset + legacyKeyedLayoutOffset(name, km.layoutKeyBase)) % LEGACY_N
     );
 
     let value = char;
     if (!decrypt) {
       value = steckMap[value] ?? value;
-      value = plugFwd(value, unusedLayouts, layoutMaps);
+      value = legacyPlugFwd(value, unusedLayouts, layoutMaps);
       for (let r = 0; r < rounds; r++) {
-        value = applyLayout(value, roundLayouts[r], roundShifts[r], false, layoutMaps, invLayoutMaps);
+        value = legacyApplyLayout(value, roundLayouts[r], roundShifts[r], false, layoutMaps, invLayoutMaps);
       }
-      if (ALPHA.includes(value)) value = ALPHA[km.transPerm[ALPHA.indexOf(value)]];
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[km.transPerm[LEGACY_ALPHA.indexOf(value)]];
       unusedLayouts.forEach((name, index) => {
-        value = applyLayout(value, name, scrambleShifts[index], false, layoutMaps, invLayoutMaps);
+        value = legacyApplyLayout(value, name, scrambleShifts[index], false, layoutMaps, invLayoutMaps);
       });
-      value = plugFwd(value, unusedLayouts, layoutMaps);
+      value = legacyPlugFwd(value, unusedLayouts, layoutMaps);
       value = steckMap[value] ?? value;
       state.whiteningState = lcg32(state.whiteningState);
-      if (ALPHA.includes(value)) value = ALPHA[(ALPHA.indexOf(value) + state.whiteningState % N) % N];
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[(LEGACY_ALPHA.indexOf(value) + state.whiteningState % LEGACY_N) % LEGACY_N];
     } else {
       state.whiteningState = lcg32(state.whiteningState);
-      if (ALPHA.includes(value)) value = ALPHA[(ALPHA.indexOf(value) - state.whiteningState % N + N * 100) % N];
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[(LEGACY_ALPHA.indexOf(value) - state.whiteningState % LEGACY_N + LEGACY_N * 100) % LEGACY_N];
       value = steckMap[value] ?? value;
-      value = plugInv(value, unusedLayouts, invLayoutMaps);
+      value = legacyPlugInv(value, unusedLayouts, invLayoutMaps);
       for (let i = unusedLayouts.length - 1; i >= 0; i--) {
-        value = applyLayout(value, unusedLayouts[i], scrambleShifts[i], true, layoutMaps, invLayoutMaps);
+        value = legacyApplyLayout(value, unusedLayouts[i], scrambleShifts[i], true, layoutMaps, invLayoutMaps);
       }
-      if (ALPHA.includes(value)) value = ALPHA[km.invTransPerm[ALPHA.indexOf(value)]];
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[km.invTransPerm[LEGACY_ALPHA.indexOf(value)]];
       for (let r = rounds - 1; r >= 0; r--) {
-        value = applyLayout(value, roundLayouts[r], roundShifts[r], true, layoutMaps, invLayoutMaps);
+        value = legacyApplyLayout(value, roundLayouts[r], roundShifts[r], true, layoutMaps, invLayoutMaps);
       }
-      value = plugInv(value, unusedLayouts, invLayoutMaps);
+      value = legacyPlugInv(value, unusedLayouts, invLayoutMaps);
       value = steckMap[value] ?? value;
     }
 
     result += value;
-    state.rotors = advanceRotors(state.rotors, ci, km.stepMask);
+    state.rotors = legacyAdvanceRotors(state.rotors, ci, km.stepMask);
+    state.alphaIndex += 1;
+  }
+
+  return result;
+}
+
+function rc4LegacyRotorStateHash(rotors) {
+  let h = FNV64_OFFSET;
+  rotors.forEach((rotor, index) => {
+    h ^= (BigInt(rotor.pos * 73 + index + 1)) & U64_MASK;
+    h = (h * FNV64_PRIME) & U64_MASK;
+  });
+  return h;
+}
+
+function computeRc4LegacyKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
+  const steckSum = steckPairs.reduce((acc, [a, b]) => {
+    const ai = LEGACY_ALPHA.indexOf(a);
+    const bi = LEGACY_ALPHA.indexOf(b);
+    const lo = Math.min(ai, bi);
+    const hi = Math.max(ai, bi);
+    return acc + BigInt(lo * LEGACY_N + hi);
+  }, 0n);
+  const rotorSum = rotors.reduce((acc, rotor) => acc + BigInt(rotor.pos), 0n);
+  const layoutSum = [...enabledLayouts].reduce((acc, name) => acc + BigInt(LEGACY_LAYOUT_NAMES.indexOf(name)), 0n);
+  const rounds = Number((steckSum + rotorSum + layoutSum + BigInt(userRounds)) % 999n) + 1;
+  const keySum = (steckSum * 31n + rotorSum * 17n + layoutSum * 13n) & U64_MASK;
+
+  const stepPos = shuffleIndicesWithSeed(LEGACY_N, keySum ^ STEP_MASK_SEED_CONST);
+  const stepMask = new Array(LEGACY_N).fill(false);
+  stepPos.slice(0, STEP_MASK_ACTIVE).forEach((pos) => { stepMask[pos] = true; });
+
+  const transPerm = shuffleIndicesWithSeed(LEGACY_N, keySum ^ TRANS_SEED_CONST);
+  const invTransPerm = new Array(LEGACY_N);
+  transPerm.forEach((value, index) => { invTransPerm[value] = index; });
+
+  const layoutMaps = {};
+  const invLayoutMaps = {};
+  LEGACY_LAYOUT_NAMES.forEach((name, layoutIndex) => {
+    const perm = shuffleIndicesWithSeed(
+      LEGACY_N,
+      (keySum ^ ((BigInt(layoutIndex + 1) * LAYOUT_SEED_MIX + LAYOUT_SEED_CONST) & U64_MASK)) & U64_MASK
+    );
+    const fwd = {};
+    const inv = {};
+    for (let i = 0; i < LEGACY_N; i++) {
+      fwd[LEGACY_ALPHA[i]] = LEGACY_ALPHA[perm[i]];
+      inv[LEGACY_ALPHA[perm[i]]] = LEGACY_ALPHA[i];
+    }
+    layoutMaps[name] = fwd;
+    invLayoutMaps[name] = inv;
+  });
+
+  return {
+    rounds,
+    keySum,
+    stepMask,
+    transPerm,
+    invTransPerm,
+    layoutKeyBase: Number(keySum % LEGACY_N_BIG),
+    layoutMaps,
+    invLayoutMaps,
+    whiteningSeed: (keySum ^ WHITENING_SEED_CONST) & U64_MASK,
+  };
+}
+
+function createRc4LegacyCipherState(steckPairs, rotors, enabledLayouts, userRounds, nonce = '') {
+  const km = computeRc4LegacyKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds);
+  const steckMap = {};
+  for (const char of LEGACY_ALPHA) steckMap[char] = char;
+  steckPairs.forEach(([a, b]) => {
+    steckMap[a] = b;
+    steckMap[b] = a;
+  });
+  const enabledList = [...enabledLayouts].filter((name) => LEGACY_LAYOUT_NAMES.includes(name));
+  const rotorSet = new Set(rotors.map((rotor) => rotor.layout));
+  const unusedLayouts = enabledList.filter((name) => !rotorSet.has(name));
+  return {
+    km,
+    steckMap,
+    enabledList,
+    unusedLayouts,
+    rotors: legacyApplyNonce(rotors.map((rotor) => ({ ...rotor })), nonce),
+    whiteningState: km.whiteningSeed,
+    alphaIndex: 0,
+  };
+}
+
+function processRc4LegacySegment(text, state, decrypt = false) {
+  const { km, steckMap, enabledList, unusedLayouts } = state;
+  const layoutMaps = km.layoutMaps;
+  const invLayoutMaps = km.invLayoutMaps;
+  const rounds = km.rounds;
+  let result = '';
+
+  for (const char of text) {
+    if (!LEGACY_ALPHA.includes(char)) {
+      result += char;
+      continue;
+    }
+
+    const ci = state.alphaIndex;
+    const shiftSeed = legacyRotorShift(state.rotors);
+    const rsHash = rc4LegacyRotorStateHash(state.rotors);
+    const posOffset = Number((km.keySum * 37n + BigInt(ci) * 13n + rsHash) % LEGACY_N_BIG);
+    const roundLayouts = [];
+    const roundShifts = [];
+    for (let r = 0; r < rounds; r++) {
+      const layoutName = enabledList[r % enabledList.length];
+      roundLayouts.push(layoutName);
+      roundShifts.push((shiftSeed + r + ci + posOffset + legacyKeyedLayoutOffset(layoutName, km.layoutKeyBase)) % LEGACY_N);
+    }
+    const scrambleShifts = unusedLayouts.map((name, index) =>
+      (shiftSeed + rounds + index + ci + posOffset + legacyKeyedLayoutOffset(name, km.layoutKeyBase)) % LEGACY_N
+    );
+
+    let value = char;
+    if (!decrypt) {
+      value = steckMap[value] ?? value;
+      value = legacyPlugFwd(value, unusedLayouts, layoutMaps);
+      for (let r = 0; r < rounds; r++) {
+        value = legacyApplyLayout(value, roundLayouts[r], roundShifts[r], false, layoutMaps, invLayoutMaps);
+      }
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[km.transPerm[LEGACY_ALPHA.indexOf(value)]];
+      unusedLayouts.forEach((name, index) => {
+        value = legacyApplyLayout(value, name, scrambleShifts[index], false, layoutMaps, invLayoutMaps);
+      });
+      value = legacyPlugFwd(value, unusedLayouts, layoutMaps);
+      value = steckMap[value] ?? value;
+      state.whiteningState = lcg64(state.whiteningState);
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[(LEGACY_ALPHA.indexOf(value) + Number(state.whiteningState % LEGACY_N_BIG)) % LEGACY_N];
+    } else {
+      state.whiteningState = lcg64(state.whiteningState);
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[(LEGACY_ALPHA.indexOf(value) - Number(state.whiteningState % LEGACY_N_BIG) + LEGACY_N * 100) % LEGACY_N];
+      value = steckMap[value] ?? value;
+      value = legacyPlugInv(value, unusedLayouts, invLayoutMaps);
+      for (let i = unusedLayouts.length - 1; i >= 0; i--) {
+        value = legacyApplyLayout(value, unusedLayouts[i], scrambleShifts[i], true, layoutMaps, invLayoutMaps);
+      }
+      if (LEGACY_ALPHA.includes(value)) value = LEGACY_ALPHA[km.invTransPerm[LEGACY_ALPHA.indexOf(value)]];
+      for (let r = rounds - 1; r >= 0; r--) {
+        value = legacyApplyLayout(value, roundLayouts[r], roundShifts[r], true, layoutMaps, invLayoutMaps);
+      }
+      value = legacyPlugInv(value, unusedLayouts, invLayoutMaps);
+      value = steckMap[value] ?? value;
+    }
+
+    result += value;
+    state.rotors = legacyAdvanceRotors(state.rotors, ci, km.stepMask);
     state.alphaIndex += 1;
   }
 
@@ -706,6 +987,47 @@ function decodeLengthField(field) {
   return decodeBase95Int(field);
 }
 
+function encodeLegacyBase95Int(value, width) {
+  if (value < 0) throw new Error('Base-95 encoding requires a non-negative integer');
+  const chars = Array(width).fill('0');
+  let current = value;
+  for (let i = width - 1; i >= 0; i--) {
+    chars[i] = LEGACY_ALPHA[current % LEGACY_N];
+    current = Math.floor(current / LEGACY_N);
+  }
+  if (current !== 0) throw new Error(`Value exceeds ${width} base-95 characters`);
+  return chars.join('');
+}
+
+function decodeLegacyBase95Int(text) {
+  let value = 0;
+  for (const char of text) {
+    const index = LEGACY_ALPHA.indexOf(char);
+    if (index < 0) throw new Error(`Non-alphabet character in legacy base-95 field: ${JSON.stringify(char)}`);
+    value = value * LEGACY_N + index;
+  }
+  return value;
+}
+
+function encodeLegacyLengthField(length) {
+  return encodeLegacyBase95Int(length, LEN_FIELD_LEN);
+}
+
+function decodeLegacyLengthField(field) {
+  if (field.length !== LEN_FIELD_LEN) throw new Error(`Length field must be ${LEN_FIELD_LEN} characters`);
+  return decodeLegacyBase95Int(field);
+}
+
+function computeLegacyAlphabetChecksum(checksumInput, keyStr, versionChar = RC4_VERSION_CHAR) {
+  let out = '';
+  let state = hashStr64(`${checksumInput}|${keyStr}|${versionChar}|chk64`);
+  for (let i = 0; i < CHECKSUM_LEN; i++) {
+    state = lcg64(state ^ BigInt(i));
+    out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
+  }
+  return out;
+}
+
 function computeChecksum(checksumInput, keyStr, versionChar = RC4_VERSION_CHAR) {
   let out = '';
   let state = hashStr64(`${checksumInput}|${keyStr}|${versionChar}|chk64`);
@@ -722,12 +1044,12 @@ function computePaddingSeed(plaintext, keyStr, lenField = null, versionChar = RC
 }
 
 function computeRc3Checksum(plaintext, keyStr, lenField = null) {
-  const field = lenField ?? encodeLengthField(plaintext.length);
+  const field = lenField ?? encodeLegacyLengthField(plaintext.length);
   let out = '';
   let state = hashStr64(`${field}|${plaintext}|${keyStr}|chk64`);
   for (let i = 0; i < CHECKSUM_LEN; i++) {
     state = lcg64(state ^ BigInt(i));
-    out += ALPHA[Number(state % N_BIG)];
+    out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
   }
   return out;
 }
@@ -737,7 +1059,7 @@ function legacyComputeChecksum(plaintext, keyStr) {
   let state = hashStr64(`${plaintext}|${keyStr}|chk64`);
   for (let i = 0; i < CHECKSUM_LEN; i++) {
     state = lcg64(state ^ BigInt(i));
-    out += ALPHA[Number(state % N_BIG)];
+    out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
   }
   return out;
 }
@@ -764,6 +1086,23 @@ function generatePadding(plaintext, keyStr, checksum, versionChar, padLen = null
   return out;
 }
 
+function computeLegacyPaddingSeed(plaintext, keyStr, lenField = null, versionChar = RC4_VERSION_CHAR) {
+  const field = lenField ?? encodeLegacyLengthField(plaintext.length);
+  return computeLegacyAlphabetChecksum(`${field}|${plaintext}`, keyStr, versionChar);
+}
+
+function generateLegacyPadding(plaintext, keyStr, checksum, versionChar, padLen = null) {
+  const targetLen = padLen ?? computePadLength(plaintext, keyStr, checksum, versionChar);
+  if (targetLen === 0) return '';
+  let out = '';
+  let state = hashStr64(`${keyStr}|${plaintext}|${checksum}|${versionChar}|padfill`);
+  for (let i = 0; i < targetLen; i++) {
+    state = lcg64(state ^ BigInt(i));
+    out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
+  }
+  return out;
+}
+
 function computeRc3PadLength(plaintext, keyStr) {
   return Number(hashStr64(`${keyStr}|${plaintext}|padlen`) % BigInt(MAX_PAD_LEN));
 }
@@ -775,7 +1114,7 @@ function generateRc3Padding(plaintext, keyStr, padLen = null) {
   let state = hashStr64(`${keyStr}|${plaintext}|padfill`);
   for (let i = 0; i < targetLen; i++) {
     state = lcg64(state ^ BigInt(i));
-    out += ALPHA[Number(state % N_BIG)];
+    out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
   }
   return out;
 }
@@ -794,8 +1133,22 @@ function packRc4Payload(plaintext, keyStr) {
   };
 }
 
-function packRc3Payload(plaintext, keyStr) {
+function packRc6Payload(plaintext, keyStr) {
+  const version = RC6_VERSION_CHAR;
   const lengthField = encodeLengthField(plaintext.length);
+  const paddingSeed = computePaddingSeed(plaintext, keyStr, lengthField, version);
+  const padding = generatePadding(plaintext, keyStr, paddingSeed, version);
+  return {
+    visiblePayload: RC4_FORMAT_TAG + lengthField + plaintext + padding,
+    version,
+    lengthField,
+    padding,
+    paddingSeed,
+  };
+}
+
+function packRc3Payload(plaintext, keyStr) {
+  const lengthField = encodeLegacyLengthField(plaintext.length);
   const checksum = computeRc3Checksum(plaintext, keyStr, lengthField);
   const padding = generateRc3Padding(plaintext, keyStr);
   return lengthField + plaintext + checksum + padding;
@@ -819,7 +1172,7 @@ function unpackRc3Payload(payload, keyStr) {
   const lengthField = payload.slice(0, LEN_FIELD_LEN);
   let plaintextLength;
   try {
-    plaintextLength = decodeLengthField(lengthField);
+    plaintextLength = decodeLegacyLengthField(lengthField);
   } catch (error) {
     return {
       plaintext: '',
@@ -905,6 +1258,93 @@ function unpackRc4VisiblePayload(payload) {
   let plaintextLength;
   try {
     plaintextLength = decodeLengthField(lengthField);
+  } catch (error) {
+    return {
+      formatTag,
+      plaintext: '',
+      verified: false,
+      structureOk: false,
+      checksumOk: false,
+      paddingOk: false,
+      metadataOk: false,
+      versionOk: false,
+      lengthField,
+      padding: '',
+      error: error.message,
+    };
+  }
+
+  const remaining = payload.slice(1 + LEN_FIELD_LEN);
+  if (plaintextLength > remaining.length) {
+    return {
+      formatTag,
+      plaintext: '',
+      verified: false,
+      structureOk: false,
+      checksumOk: false,
+      paddingOk: false,
+      metadataOk: false,
+      versionOk: false,
+      lengthField,
+      padding: '',
+      error: `Length field decodes to ${plaintextLength}, but visible payload only has ${remaining.length} chars after the header`,
+    };
+  }
+
+  return {
+    formatTag,
+    plaintext: remaining.slice(0, plaintextLength),
+    padding: remaining.slice(plaintextLength),
+    lengthField,
+    structureOk: true,
+    verified: false,
+    checksumOk: false,
+    paddingOk: false,
+    metadataOk: false,
+    versionOk: false,
+    error: null,
+  };
+}
+
+function unpackRc4LegacyVisiblePayload(payload) {
+  const minLen = 1 + LEN_FIELD_LEN;
+  if (payload.length < minLen) {
+    return {
+      formatTag: '',
+      plaintext: '',
+      verified: false,
+      structureOk: false,
+      checksumOk: false,
+      paddingOk: false,
+      metadataOk: false,
+      versionOk: false,
+      lengthField: '',
+      padding: '',
+      error: GENERIC_DECRYPT_ERROR,
+    };
+  }
+
+  const formatTag = payload[0];
+  if (formatTag !== RC4_FORMAT_TAG) {
+    return {
+      formatTag,
+      plaintext: '',
+      verified: false,
+      structureOk: false,
+      checksumOk: false,
+      paddingOk: false,
+      metadataOk: false,
+      versionOk: false,
+      lengthField: '',
+      padding: '',
+      error: GENERIC_DECRYPT_ERROR,
+    };
+  }
+
+  const lengthField = payload.slice(1, 1 + LEN_FIELD_LEN);
+  let plaintextLength;
+  try {
+    plaintextLength = decodeLegacyLengthField(lengthField);
   } catch (error) {
     return {
       formatTag,
@@ -1043,6 +1483,134 @@ function decodeHiddenCarrierStream(carrierStream, keyStr) {
   return out;
 }
 
+function tryDecodeRc6Metadata(carrierStream, keyStr) {
+  if (carrierStream.length !== HIDDEN_SYMBOL_COUNT) return null;
+  let metadata;
+  try {
+    metadata = decodeHiddenCarrierStream(carrierStream, keyStr);
+  } catch (_) {
+    return null;
+  }
+  if (metadata.length !== HIDDEN_METADATA_LEN || metadata[0] !== RC6_VERSION_CHAR) return null;
+  return metadata;
+}
+
+function encryptRc6Stream(plaintext, key) {
+  const payload = packRc6Payload(plaintext, key.keyStr);
+  const checksum = computeChecksum(payload.visiblePayload, deriveMacSubkey(key.keyStr), payload.version);
+  const carrierStream = encodeHiddenCarrierChars(payload.version + checksum, key.keyStr);
+  const schedule = buildStreamSchedule(key.keyStr, plaintext.length, payload.visiblePayload.length);
+  const wildcards = deriveCarrierWildcards(key.keyStr, HIDDEN_SYMBOL_COUNT);
+  const state = createCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
+
+  let payloadIndex = 0;
+  let checksumIndex = 0;
+  let carrierIndex = 0;
+  let out = '';
+  for (const event of schedule) {
+    if (event === 'payload') {
+      out += processSegment(payload.visiblePayload[payloadIndex], state, false);
+      payloadIndex++;
+    } else if (event === 'checksum') {
+      out += processSegment(checksum[checksumIndex], state, false);
+      checksumIndex++;
+    } else {
+      processSegment(wildcards[carrierIndex], state, false);
+      out += carrierStream[carrierIndex];
+      carrierIndex++;
+    }
+  }
+  return out;
+}
+
+function attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen) {
+  let visibleLen = 0;
+  for (const char of ciphertext) if (!ZERO_WIDTH_SET.has(char)) visibleLen++;
+  const payloadLen = visibleLen - CHECKSUM_LEN;
+  if (payloadLen < 1 + LEN_FIELD_LEN) return null;
+  const schedule = buildStreamSchedule(key.keyStr, plaintextLen, payloadLen);
+  if (schedule.length !== ciphertext.length) return null;
+
+  const wildcards = deriveCarrierWildcards(key.keyStr, HIDDEN_SYMBOL_COUNT);
+  const state = createCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
+  let payload = '';
+  let checksum = '';
+  let carrierStream = '';
+  let carrierIndex = 0;
+
+  for (let i = 0; i < schedule.length; i++) {
+    const event = schedule[i];
+    const char = ciphertext[i];
+    if (event === 'carrier') {
+      if (!ZERO_WIDTH_SET.has(char) || carrierIndex >= HIDDEN_SYMBOL_COUNT) return null;
+      processSegment(wildcards[carrierIndex], state, true);
+      carrierStream += char;
+      carrierIndex++;
+      continue;
+    }
+
+    if (ZERO_WIDTH_SET.has(char) || !ALPHA.includes(char)) return null;
+    const value = processSegment(char, state, true);
+    if (event === 'checksum') checksum += value;
+    else payload += value;
+  }
+  if (carrierIndex !== HIDDEN_SYMBOL_COUNT) return null;
+
+  const metadata = tryDecodeRc6Metadata(carrierStream, key.keyStr);
+  if (!metadata) return null;
+  const visibleFields = unpackRc4VisiblePayload(payload);
+  if (!visibleFields.structureOk || visibleFields.formatTag !== RC4_FORMAT_TAG) return null;
+  if (visibleFields.plaintext.length !== plaintextLen) return null;
+
+  const version = metadata[0];
+  const metadataChecksum = metadata.slice(1);
+  const expectedChecksum = computeChecksum(payload, deriveMacSubkey(key.keyStr), version);
+  const paddingSeed = computePaddingSeed(visibleFields.plaintext, key.keyStr, visibleFields.lengthField, version);
+  const expectedPadLen = computePadLength(visibleFields.plaintext, key.keyStr, paddingSeed, version);
+  const expectedPadding = generatePadding(visibleFields.plaintext, key.keyStr, paddingSeed, version, expectedPadLen);
+  const versionOk = version === RC6_VERSION_CHAR;
+  const checksumOk = versionOk && checksum === expectedChecksum && metadataChecksum === checksum;
+  const paddingOk = versionOk && visibleFields.padding.length === expectedPadLen && visibleFields.padding === expectedPadding;
+  const verified = versionOk && checksumOk && paddingOk;
+  if (!verified) return null;
+
+  const result = {
+    plaintext: visibleFields.plaintext,
+    verified: true,
+    checksumOk,
+    paddingOk,
+    structureOk: true,
+    metadataOk: true,
+    versionOk,
+    diagnostics,
+    payload,
+    visiblePayload: payload,
+    format: 'rc.6-stream',
+    lengthField: visibleFields.lengthField,
+    padding: visibleFields.padding,
+    hiddenPayload: metadata,
+    version,
+    error: null,
+  };
+  return finalizeDecryptResult(result, visibleFields.plaintext, key.keyStr, state.km, state);
+}
+
+function decryptRc6Stream(ciphertext, key, diagnostics, extracted) {
+  if (extracted.hiddenCarrierCount !== HIDDEN_SYMBOL_COUNT) return null;
+  if (!tryDecodeRc6Metadata(extracted.carrierStream, key.keyStr)) return null;
+  const visibleLen = extracted.visibleText.length;
+  const payloadLen = visibleLen - CHECKSUM_LEN;
+  if (payloadLen < 1 + LEN_FIELD_LEN) return null;
+
+  for (let padLen = 0; padLen < MAX_PAD_LEN; padLen++) {
+    const plaintextLen = payloadLen - (1 + LEN_FIELD_LEN) - padLen;
+    if (plaintextLen < 0) continue;
+    const result = attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen);
+    if (result && result.success) return result;
+  }
+  return null;
+}
+
 function formatCipherChar(char) {
   if (ZERO_WIDTH_LABELS[char]) return ZERO_WIDTH_LABELS[char];
   if (char === ' ') return '[space]';
@@ -1113,8 +1681,10 @@ function parseKey(keyStr) {
   const parts = keyStr.trim().split(/\s+/);
   if (parts.length < 4 || parts.length > 5) throw new Error('Expected 4 or 5 space-separated sections');
   const [enabledStr, rotorStr, steckStr, roundsStr, nonceStr] = parts;
-  const enabled = new Set([...enabledStr].map((char) => {
-    const index = parseInt(char, 10);
+  const wideKey = enabledStr.startsWith(KEY_V6_PREFIX);
+  const enabledToken = wideKey ? enabledStr.slice(KEY_V6_PREFIX.length) : enabledStr;
+  const enabled = new Set([...enabledToken].map((char) => {
+    const index = wideKey ? decodeBase36Index(char) : parseInt(char, 10);
     if (!Number.isInteger(index) || index < 0 || index >= LAYOUT_NAMES.length) {
       throw new Error(`Invalid enabled layout digit: ${JSON.stringify(char)}`);
     }
@@ -1123,8 +1693,8 @@ function parseKey(keyStr) {
   const rotors = [];
   if (!rotorStr || rotorStr.length % 3 !== 0) throw new Error('Rotor section must be groups of 3 digits');
   for (let i = 0; i < rotorStr.length; i += 3) {
-    const layoutIndex = parseInt(rotorStr[i], 10);
-    const pos = parseInt(rotorStr.slice(i + 1, i + 3), 10);
+    const layoutIndex = wideKey ? decodeBase36Index(rotorStr[i]) : parseInt(rotorStr[i], 10);
+    const pos = wideKey ? decodeBase36Index(rotorStr.slice(i + 1, i + 3)) : parseInt(rotorStr.slice(i + 1, i + 3), 10);
     if (!Number.isInteger(layoutIndex) || layoutIndex < 0 || layoutIndex >= LAYOUT_NAMES.length) {
       throw new Error(`Invalid rotor layout index at ${i}`);
     }
@@ -1137,8 +1707,11 @@ function parseKey(keyStr) {
   if (steckStr !== '0') {
     if (steckStr.length % 4 !== 0) throw new Error('Steck section must be groups of 4 digits');
     for (let i = 0; i < steckStr.length; i += 4) {
-      const ai = parseInt(steckStr.slice(i, i + 2), 10);
-      const bi = parseInt(steckStr.slice(i + 2, i + 4), 10);
+      const ai = wideKey ? decodeBase36Index(steckStr.slice(i, i + 2)) : parseInt(steckStr.slice(i, i + 2), 10);
+      const bi = wideKey ? decodeBase36Index(steckStr.slice(i + 2, i + 4)) : parseInt(steckStr.slice(i + 2, i + 4), 10);
+      if (!Number.isInteger(ai) || !Number.isInteger(bi) || ai < 0 || bi < 0 || ai >= N || bi >= N) {
+        throw new Error('Steck section contains an out-of-range alphabet index');
+      }
       steckPairs.push([ALPHA[ai], ALPHA[bi]]);
     }
   }
@@ -1150,7 +1723,8 @@ function parseKey(keyStr) {
   if (nonceStr) {
     if (nonceStr.length % 2 !== 0) throw new Error('Nonce section must be groups of 2 digits');
     for (let i = 0; i < nonceStr.length; i += 2) {
-      const index = parseInt(nonceStr.slice(i, i + 2), 10);
+      const index = wideKey ? decodeBase36Index(nonceStr.slice(i, i + 2)) : parseInt(nonceStr.slice(i, i + 2), 10);
+      if (!Number.isInteger(index) || index < 0 || index >= N) throw new Error('Nonce section contains an out-of-range alphabet index');
       nonce += ALPHA[index];
     }
   }
@@ -1158,29 +1732,28 @@ function parseKey(keyStr) {
 }
 
 function encodeKey(enabled, rotors, steckPairs, userRounds, nonce = '') {
-  const enabledStr = [...enabled].map((name) => LAYOUT_NAMES.indexOf(name)).join('');
-  const rotorStr = rotors.map((rotor) => `${LAYOUT_NAMES.indexOf(rotor.layout)}${String(rotor.pos).padStart(2, '0')}`).join('');
+  const enabledStr = KEY_V6_PREFIX + [...enabled].map((name) => encodeBase36Index(LAYOUT_NAMES.indexOf(name), 1)).join('');
+  const rotorStr = rotors.map((rotor) =>
+    `${encodeBase36Index(LAYOUT_NAMES.indexOf(rotor.layout), 1)}${encodeBase36Index(rotor.pos, 2)}`
+  ).join('');
   const steckStr = steckPairs.length === 0 ? '0' : steckPairs.map(([a, b]) => {
     const lo = Math.min(ALPHA.indexOf(a), ALPHA.indexOf(b));
     const hi = Math.max(ALPHA.indexOf(a), ALPHA.indexOf(b));
-    return `${String(lo).padStart(2, '0')}${String(hi).padStart(2, '0')}`;
+    return `${encodeBase36Index(lo, 2)}${encodeBase36Index(hi, 2)}`;
   }).sort().join('');
   const roundsStr = String(userRounds).padStart(3, '0');
   const base = `${enabledStr} ${rotorStr} ${steckStr} ${roundsStr}`;
   if (!nonce) return base;
-  const nonceStr = [...nonce].map((char) => String(ALPHA.indexOf(char)).padStart(2, '0')).join('');
+  const nonceStr = [...nonce].map((char) => encodeBase36Index(ALPHA.indexOf(char), 2)).join('');
   return `${base} ${nonceStr}`;
 }
 
 function encrypt(plaintext, keyStr) {
+  if (!keyStr.trim().split(/\s+/)[0].startsWith(KEY_V6_PREFIX)) {
+    throw new Error(K6_ENCRYPT_REQUIRED_ERROR);
+  }
   const key = parseKey(keyStr);
-  const payload = packRc4Payload(plaintext, key.keyStr);
-  const state = createCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
-  const visibleCipher = processSegment(payload.visiblePayload, state, false);
-  const checksum = computeChecksum(visibleCipher, deriveMacSubkey(key.keyStr), payload.version);
-  const hiddenCipher = processSegment(payload.version + checksum, state, false);
-  const carrierStream = encodeHiddenCarrierChars(hiddenCipher, key.keyStr);
-  return injectHiddenCarriers(visibleCipher, carrierStream, key.keyStr);
+  return encryptRc6Stream(plaintext, key);
 }
 
 function decrypt(ciphertext, keyStr) {
@@ -1188,6 +1761,25 @@ function decrypt(ciphertext, keyStr) {
   const extracted = extractCarrierInfo(ciphertext);
   const visibleText = extracted.visibleText;
   const key = parseKey(keyStr);
+
+  const rc6Result = decryptRc6Stream(ciphertext, key, diagnostics, extracted);
+  if (rc6Result !== null) return rc6Result;
+  if (tryDecodeRc6Metadata(extracted.carrierStream, key.keyStr)) {
+    return genericDecryptFailure({
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      metadataOk: true,
+      versionOk: true,
+      diagnostics,
+      payload: '',
+      visiblePayload: '',
+      format: 'rc.6-stream',
+      error: GENERIC_DECRYPT_ERROR,
+    }, '', key.keyStr);
+  }
 
   if (visibleText.startsWith(LEGACY_RC3_HEADER)) {
     const body = visibleText.slice(LEGACY_RC3_HEADER.length);
@@ -1198,9 +1790,18 @@ function decrypt(ciphertext, keyStr) {
     return finalizeDecryptResult(result, result.plaintext || payload, key.keyStr, state.km, state);
   }
 
-  const rc4State = createCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
-  const visiblePayload = processSegment(visibleText, rc4State, true);
-  const visibleFields = unpackRc4VisiblePayload(visiblePayload);
+  let rc4State;
+  let visiblePayload;
+  let visibleFields;
+  try {
+    rc4State = createRc4LegacyCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
+    visiblePayload = processRc4LegacySegment(visibleText, rc4State, true);
+    visibleFields = unpackRc4LegacyVisiblePayload(visiblePayload);
+  } catch (_) {
+    rc4State = null;
+    visiblePayload = '';
+    visibleFields = { structureOk: false };
+  }
   if (visibleFields.structureOk && visibleFields.formatTag === RC4_FORMAT_TAG) {
     const baseResult = {
       plaintext: visibleFields.plaintext,
@@ -1239,7 +1840,7 @@ function decrypt(ciphertext, keyStr) {
       }, visibleFields.plaintext, key.keyStr, rc4State.km, rc4State);
     }
 
-    const hiddenPayload = processSegment(hiddenCipher, rc4State, true);
+    const hiddenPayload = processRc4LegacySegment(hiddenCipher, rc4State, true);
     if (hiddenPayload.length !== HIDDEN_METADATA_LEN) {
       return genericDecryptFailure({
         ...baseResult,
@@ -1251,10 +1852,10 @@ function decrypt(ciphertext, keyStr) {
     const version = hiddenPayload[0];
     const checksum = hiddenPayload.slice(1);
     const versionOk = version === RC4_VERSION_CHAR;
-    const checksumOk = versionOk && checksum === computeChecksum(visibleText, deriveMacSubkey(key.keyStr), version);
-    const paddingSeed = versionOk ? computePaddingSeed(visibleFields.plaintext, key.keyStr, visibleFields.lengthField, version) : '';
+    const checksumOk = versionOk && checksum === computeLegacyAlphabetChecksum(visibleText, deriveMacSubkey(key.keyStr), version);
+    const paddingSeed = versionOk ? computeLegacyPaddingSeed(visibleFields.plaintext, key.keyStr, visibleFields.lengthField, version) : '';
     const expectedPadLen = versionOk ? computePadLength(visibleFields.plaintext, key.keyStr, paddingSeed, version) : 0;
-    const expectedPadding = versionOk ? generatePadding(visibleFields.plaintext, key.keyStr, paddingSeed, version, expectedPadLen) : '';
+    const expectedPadding = versionOk ? generateLegacyPadding(visibleFields.plaintext, key.keyStr, paddingSeed, version, expectedPadLen) : '';
     const paddingOk = versionOk && visibleFields.padding.length === expectedPadLen && visibleFields.padding === expectedPadding;
     const verified = versionOk && checksumOk && paddingOk;
     const result = {
@@ -1275,9 +1876,18 @@ function decrypt(ciphertext, keyStr) {
   const pos = legacyChecksumPos(key.keyStr, visibleText.length);
   const checksum = visibleText.slice(pos, pos + CHECKSUM_LEN);
   const stripped = visibleText.slice(0, pos) + visibleText.slice(pos + CHECKSUM_LEN);
-  const state = createLegacyCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
-  const plaintext = processLegacySegment(stripped, state, true);
-  const verified = checksum === legacyComputeChecksum(plaintext, key.keyStr);
+  let state;
+  let plaintext;
+  let verified;
+  try {
+    state = createLegacyCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
+    plaintext = processLegacySegment(stripped, state, true);
+    verified = checksum === legacyComputeChecksum(plaintext, key.keyStr);
+  } catch (_) {
+    state = { km: {}, rotors: [] };
+    plaintext = '';
+    verified = false;
+  }
   const result = {
     plaintext,
     verified,
@@ -1356,7 +1966,7 @@ function steckPairingCountBig(alphaSize, pairCount) {
 }
 
 function profileWeight(layoutCount, rotorCount, steckCount, includeNonce) {
-  const layoutCombos = permutationCountBig(10, layoutCount);
+  const layoutCombos = permutationCountBig(LAYOUT_NAMES.length, layoutCount);
   const rotorCombos = BigInt(layoutCount * N) ** BigInt(rotorCount);
   const steckCombos = steckPairingCountBig(N, steckCount);
   const nonceCombos = includeNonce ? N_BIG ** 3n : 1n;
@@ -1365,7 +1975,7 @@ function profileWeight(layoutCount, rotorCount, steckCount, includeNonce) {
 
 function chooseProfile(opts, rng) {
   const layoutChoices = opts.numLayouts == null ? [...Array(LAYOUT_NAMES.length).keys()].map((i) => i + 1) : [opts.numLayouts];
-  const rotorChoices = opts.numRotors == null ? [...Array(13).keys()].map((i) => i + 1) : [opts.numRotors];
+  const rotorChoices = opts.numRotors == null ? [...Array(18).keys()].map((i) => i + 1) : [opts.numRotors];
   const steckChoices = opts.numSteck == null ? [...Array(Math.floor(N / 2) + 1).keys()] : [opts.numSteck];
   const nonceChoices = opts.includeNonce == null ? [false, true] : [Boolean(opts.includeNonce)];
   return {
@@ -1398,8 +2008,8 @@ function generateKey(opts = {}) {
   if (numLayouts != null && (numLayouts < 1 || numLayouts > LAYOUT_NAMES.length)) {
     throw new Error(`numLayouts must be between 1 and ${LAYOUT_NAMES.length}`);
   }
-  if (numRotors != null && (numRotors < 1 || numRotors > 13)) {
-    throw new Error('numRotors must be between 1 and 13');
+  if (numRotors != null && (numRotors < 1 || numRotors > 18)) {
+    throw new Error('numRotors must be between 1 and 18');
   }
   if (numSteck != null && (numSteck < 0 || numSteck > Math.floor(N / 2))) {
     throw new Error(`numSteck must be between 0 and ${Math.floor(N / 2)}`);
@@ -1465,7 +2075,7 @@ function calcKeyStrength(parsedKey) {
   };
   const enabledCount = parsedKey.enabled.size;
   let layoutCombos = 1;
-  for (let i = 0; i < enabledCount; i++) layoutCombos *= (10 - i);
+  for (let i = 0; i < enabledCount; i++) layoutCombos *= (LAYOUT_NAMES.length - i);
   const rotorCombos = Math.pow(enabledCount * N, parsedKey.rotors.length);
   const steckCombos = steckPairingCount(N, parsedKey.steckPairs.length);
   const roundCombos = 999;
@@ -1498,8 +2108,10 @@ function calcKeyStrength(parsedKey) {
   };
 }
 
+const ENIGMAK_EXPORTS = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, analyzeCiphertext, ALPHA, N };
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, analyzeCiphertext, ALPHA, N };
-} else if (typeof window !== 'undefined') {
-  window.ENIGMAK = { encrypt, decrypt, generateKey, calcIoC, calcKeyStrength, parseKey, encodeKey, analyzeCiphertext, ALPHA, N };
+  module.exports = ENIGMAK_EXPORTS;
+}
+if (typeof window !== 'undefined') {
+  window.ENIGMAK = ENIGMAK_EXPORTS;
 }

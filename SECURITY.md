@@ -21,17 +21,31 @@ public scrutiny.
 
 - **Not formally audited.** ENIGMAK has not undergone professional
   cryptanalytic review.
-- **Non-ASCII passthrough.** Characters outside the 95-symbol built-in ASCII
-  alphabet still pass through unchanged in `v3.0.0-rc.5`.
+- **161-symbol alphabet with passthrough.** The active cipher operates on a
+  161-symbol `ALPHA` (legacy printable ASCII plus European extended
+  characters). Characters outside `ALPHA` pass through unchanged on encrypt and
+  do not advance rotor state. On the `rc.6-stream` decrypt path, any visible
+  non-carrier stream character outside `ALPHA` causes verification failure.
+- **Extended characters and layouts.** European extended characters (indices
+  95 and above) participate in stecker, diffusion, whitening, and keyed layout
+  permutations, but static ergonomic keyboard-layout substitution does not yet
+  assign them to physical keys. National layout labels are reserved for a
+  future release.
 - **Key reuse.** Reusing a key across messages creates correlated ciphertext
   and is strongly discouraged.
-- **Checksum is not AEAD.** The current `rc.4-hidden` path protects version,
-  checksum, and keyed padding more cleanly than older visible packaging, but
-  it is still not a substitute for researched authenticated encryption.
-- **Zero-width metadata transport.** New ciphertext depends on 44 invisible
-  metadata carriers. Use exact copy/export paths; terminal highlighting can
-  omit those characters. Python interactive encryption now copies exact output
-  to the system clipboard to avoid this failure mode.
+- **Checksum is not AEAD.** The `rc.6-stream` format protects version,
+  checksum, and keyed padding, but it is not a substitute for researched
+  authenticated encryption.
+- **Zero-width metadata transport.** New `rc.6-stream` ciphertext depends on
+  44 invisible metadata carriers. Use exact copy/export paths; terminal
+  highlighting can omit those characters. Python interactive encryption copies
+  exact output to the system clipboard to avoid this failure mode.
+- **Stream schedule integrity.** `rc.6-stream` interleaves payload symbols,
+  scattered checksum symbols, and zero-width carriers in a keyed order.
+  Removing or reordering checksum or carrier symbols must fail verification.
+- **Phantom carrier advancement.** Zero-width carrier positions advance cipher
+  state through key-derived wildcard alphabet characters. Tampering with
+  carriers desynchronizes decryption.
 - **Meet-in-the-middle.** A theoretical MITM attack may still be possible if
   the diffusion and scramble layers are not strong enough in aggregate.
 - **Browser environment.** Running in a browser is less secure than dedicated
@@ -60,6 +74,9 @@ public scrutiny.
   writes on successful verification.
 - Failure-path corruption was fixed at exactly 4096 characters in `v3.0.0-rc.5`
   so the amount of local overwrite work is independent of message length.
+- `v3.0.0-rc.6` introduced `rc.6-stream` with scattered encrypted checksum
+  characters, phantom advancement at carrier positions, a 161-symbol alphabet,
+  `K6:` base36 key encoding, and a `ROUND_MINIMUM` floor of 10 derived rounds.
 
 ## Recommended Usage
 
@@ -67,12 +84,14 @@ public scrutiny.
 - Use the nonce for every message.
 - Never transmit keys through the same channel as ciphertext.
 - Verify the key fingerprint verbally before use.
-- Prefer the `rc.4-hidden` format for all new messages.
+- Prefer `rc.6-stream` for all new messages.
 - Preserve zero-width metadata when copying or exporting ciphertext.
 - Prefer clipboard or interactive mode for Python CLI decryption of real
   ciphertext, and rely on the interactive encryption clipboard copy rather than
   manually highlighting terminal output.
 - Treat the current checksum as an integrity hint, not as authenticated
   encryption.
+- Restrict plaintext to `ALPHA` when using `rc.6-stream` if you require
+  reliable round-trip through the current decrypt path.
 - Do not use ENIGMAK for classified, medical, legal, or life-critical
   communications.
