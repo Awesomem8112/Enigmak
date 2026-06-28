@@ -1,44 +1,45 @@
-# ENIGMAK v3.0.0-rc.6 Formal Specification
+# ENIGMAK v3.0.0-rc.7 Formal Specification
 
 ## 1. Overview
 
 ENIGMAK is a symmetric, stateful, character-by-character
-substitution-permutation rotor cipher. Release candidate `v3.0.0-rc.6` emits new
-ciphertext in the **`rc.6-stream`** format, which combines:
+substitution-permutation rotor cipher. Release candidate `v3.0.0-rc.7` emits new
+ciphertext with API format label **`rc.6-stream`** and hidden metadata version
+character **`5`**. This current stream format combines:
 
-- a 161-symbol alphabet
+- a 162-symbol alphabet
 - a steckerbrett (up to 80 pairs)
 - keyed full-alphabet layout permutations (16 layout labels)
 - multi-round shifted substitution
-- keyed 161-position diffusion
+- keyed 162-position diffusion
 - rotor-state feedback
 - position whitening
 - a visible encrypted payload body (`H` format tag)
 - **10** scattered encrypted checksum characters in the stream
 - hidden metadata (version + checksum) encoded as **44** zero-width carriers
 - key-derived phantom advancement at carrier positions
+- an opt-in materialized metadata carrier mode
 
-Decryptors must also accept older `rc.4-hidden`, headed `rc.3`, and legacy
-`rc.2` ciphertext.
+Decryptors must also accept older `rc.4-hidden`, headed `rc.3`, legacy `rc.2`,
+and original `v2.0.0-legacy` ciphertext.
 
 ## 2. Alphabet
 
 `LEGACY_ALPHA` is the original 95-symbol printable ASCII set. `EXTENDED_ALPHA`
-adds 66 European extended characters. The active alphabet is:
+adds 66 European extended characters. Newline is appended as a first-class
+symbol. The active alphabet is:
 
 ```text
-ALPHA = LEGACY_ALPHA + EXTENDED_ALPHA
-N = 161
+ALPHA = LEGACY_ALPHA + EXTENDED_ALPHA + "\n"
+N = 162
 ```
 
 Characters outside `ALPHA` pass through unchanged during `process_segment` and do
-not advance rotor state. Implementations targeting `rc.6-stream` decryption
-must reject any visible non-carrier stream character outside `ALPHA`.
+not advance rotor state. Implementations targeting `rc.6-stream` decryption must
+reject any visible non-carrier stream character outside `ALPHA`.
 
-Extended characters (index 95 and above) participate in stecker, diffusion,
-whitening, and keyed layout permutations. Static ergonomic keyboard-layout
-substitution tables currently map only the legacy 95-symbol set; extended
-characters remain layout-unassigned until a later release.
+Extended characters and newline participate in stecker, diffusion, whitening,
+and keyed layout permutations.
 
 ## 3. Layout Labels
 
@@ -55,17 +56,17 @@ Sixteen stable layout labels exist:
 7  Halmak
 8  AZERTY
 9  QWERTZ
-10 Spanish      (reserved; keyed perm only)
-11 Swedish      (reserved)
-12 Norwegian    (reserved)
-13 Danish       (reserved)
-14 Icelandic    (reserved)
-15 Belgian      (reserved)
+10 Spanish
+11 Swedish
+12 Norwegian
+13 Danish
+14 Icelandic
+15 Belgian
 ```
 
 Each label seeds an independent key-derived permutation of the full `ALPHA`.
-Static `LAYOUT_DEFS` tables cover the first ten ergonomic layouts for tooling;
-they do not define the active cipher path.
+Static `LAYOUT_DEFS` tables cover all 16 labels for tooling; keyed
+full-alphabet permutations define the active cipher path.
 
 ## 4. Key Format
 
@@ -137,6 +138,10 @@ Current-path derivation uses 64-bit state for:
 Legacy decrypt paths retain their historical 32-bit or 95-symbol rules where
 required for compatibility.
 
+Current keyed shuffles use rejection-sampling Fisher-Yates over 64-bit random
+state so Python and JavaScript avoid modulo bias and produce identical
+permutations for the same seed and size.
+
 ## 6. Encryption Pipeline
 
 For each in-alphabet character, the current core applies:
@@ -153,7 +158,7 @@ For each in-alphabet character, the current core applies:
 9. Rotor advancement (irregular step mask)
 ```
 
-## 7. RC.6 Stream Packaging
+## 7. Current Stream Packaging
 
 ### 7.1 Visible payload (before stream scheduling)
 
@@ -162,17 +167,18 @@ For each in-alphabet character, the current core applies:
 ```
 
 - `format_tag` = `H` (`RC4_FORMAT_TAG`)
-- `len_field` = 4 base-95 (`N`) characters encoding plaintext length
+- `len_field` = 4 active-`ALPHA` characters encoding plaintext length
 - `padding` = deterministic keyed padding (0..`MAX_PAD_LEN`, with empty
   plaintext forced to at least one padding symbol)
 
-`pack_rc6_payload` uses hidden metadata version character `5` (`RC6_VERSION_CHAR`).
+`pack_rc6_payload` uses hidden metadata version character `5`
+(`RC6_VERSION_CHAR`).
 
 ### 7.2 Checksum
 
-A 10-character checksum is derived from the **visible payload ciphertext**
-(after packing, before stream scheduling) using `deriveMacSubkey(keyStr)` and
-version `5`.
+A 10-character checksum is derived from the **packed visible payload** (the `H`
+tag, length field, plaintext, and padding before stream scheduling) using
+`deriveMacSubkey(keyStr)` and version `5`.
 
 ### 7.3 Hidden metadata
 
@@ -197,6 +203,16 @@ Total carriers per message:
 11 * 4 = 44
 ```
 
+### 7.3.1 Materialized metadata
+
+Materialized metadata is optional. When enabled, the same 44 metadata carrier
+events are represented as visible `ALPHA` characters in a keyed `A,B,C,D`
+alphabet and are encrypted as normal stream participants. When disabled, carrier
+events use zero-width code points and advance state through phantom wildcards.
+
+The version character, checksum calculation, event counts, and hidden metadata
+content are unchanged. Sender and receiver must use the same materialize setting.
+
 ### 7.4 Stream schedule
 
 Let:
@@ -218,9 +234,15 @@ Schedule seed:
 hash64(keyStr + "|stream-schedule|" + str(T))
 ```
 
+The schedule is a deterministic keyed walk over remaining event counts. At each
+stream index, `LCG64` advances the schedule state and selects one of the
+remaining event classes. Implementations may materialize the resulting event
+list, but encryption and decryption must be able to reproduce the same event at
+the same position without ciphertext lookahead.
+
 ### 7.5 Phantom wildcards
 
-For each carrier event, derive a wildcard alphabet symbol from:
+For each zero-width carrier event, derive a wildcard alphabet symbol from:
 
 ```text
 hash64(keyStr + "|carrier-wildcards|")
@@ -228,7 +250,8 @@ hash64(keyStr + "|carrier-wildcards|")
 
 Encrypt or decrypt that wildcard through `process_segment` to advance state,
 then emit (encrypt) or read (decrypt) the corresponding zero-width carrier
-symbol. Do not output the wildcard itself.
+symbol. Do not output the wildcard itself, and do not use the zero-width code
+point as the rotor contribution.
 
 ### 7.6 Encryption walk
 
@@ -238,14 +261,19 @@ Initialize cipher state from the parsed key. For each scheduled event in order:
 - **checksum**: append `process_segment(checksum[i])`
 - **carrier**: `process_segment(wildcard[i])`, append `carrier_stream[i]`
 
+For materialized carrier mode, the carrier stream character itself is processed
+through `process_segment` and appended.
+
 ## 8. Decryption Order
 
 Decryptors must attempt formats in this order:
 
 1. headed **`rc.3`** if visible text begins with `E3|`
-2. **`rc.6-stream`**
-3. **`rc.4-hidden`**
-4. legacy **`rc.2`**
+2. **`rc.6-stream`** materialized mode when explicitly requested
+3. **`rc.6-stream`** zero-width carrier mode
+4. **`rc.4-hidden`**
+5. legacy **`rc.2`**
+6. original **`v2.0.0-legacy`**
 
 ### 8.1 RC.3 path
 
@@ -254,16 +282,21 @@ Remove `E3|`, decrypt body with legacy 95-symbol path, parse
 
 ### 8.2 RC.6-stream path
 
-1. Extract zero-width carriers; require count `44` and decodable metadata with
-   version `5`.
-2. Let `visible_len` = count of non-carrier characters; `payload_len` =
-   `visible_len - 10`.
-3. Brute `pad_len` in `0..MAX_PAD_LEN` to recover `plaintext_len`.
-4. Rebuild schedule from `(plaintext_len, payload_len)`; require
+1. In zero-width mode, extract zero-width carriers; require count `44` and
+   decodable metadata with version `5`.
+2. In materialized mode, require every ciphertext symbol to be in `ALPHA`; the
+   receiver must have explicitly selected materialized mode.
+3. Let `visible_len` = count of non-carrier characters in zero-width mode, or
+   total ciphertext length in materialized mode. Let `payload_len` =
+   `visible_len - 10` in zero-width mode or `visible_len - 10 - 44` in
+   materialized mode.
+4. Brute `pad_len` in `0..MAX_PAD_LEN` to recover `plaintext_len`.
+5. Rebuild schedule from `(plaintext_len, payload_len)`; require
    `len(schedule) == len(ciphertext)`.
-5. Walk stream: decrypt payload and checksum symbols; at carriers, decrypt
-   wildcard then record carrier symbol.
-6. Unpack visible payload; verify scattered checksum, hidden metadata checksum,
+6. Walk stream: decrypt payload and checksum symbols; at zero-width carriers,
+   decrypt the wildcard then record the carrier symbol. At materialized carriers,
+   decrypt the carrier symbol and record the resulting metadata digit.
+7. Unpack visible payload; verify scattered checksum, hidden metadata checksum,
    version, and padding.
 
 On failure, return public error `Decryption failed.` with blank plaintext per
@@ -304,6 +337,7 @@ If constraints make the floor impossible, generation must fail.
 Implementations should report:
 
 - hidden carrier count (expect `44` on valid new messages)
+- materialized metadata mode when requested
 - suspicious clipboard-normalized punctuation
 - control-character presence in ciphertext
 - generic decryption failure without exposing verification details
@@ -335,3 +369,5 @@ possible.
 - ENIGMAK is not formally audited.
 - `rc.6-stream` round-trip requires plaintext and ciphertext stream symbols
   (except carriers) to remain inside `ALPHA`.
+- The API format label remains `rc.6-stream` for the version-5 stream wire
+  format introduced before RC7.

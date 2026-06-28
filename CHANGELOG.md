@@ -1,3 +1,48 @@
+## v3.0.0-rc.7 - Release Candidate 7
+
+### Highlights
+- **Rejection-sampling Fisher-Yates** - `shuffle_indices_with_seed` now uses
+  uniform rejection sampling against the `2^64` threshold instead of biased
+  modulo reduction, removing a small but measurable bias from every
+  key-derived permutation. Python and JavaScript implementations produce
+  identical shuffles for the same seed and size.
+- **Newline joins ALPHA** - `\n` is appended at index 161, expanding the
+  active alphabet to 162 symbols. Multi-line plaintext now participates in
+  all cipher operations and round-trips cleanly without special handling.
+- **Six new national layouts** - `Spanish`, `Swedish`, `Norwegian`,
+  `Danish`, `Icelandic`, and `Belgian` are now full `LAYOUT_DEFS` entries
+  with their distinctive character maps (e.g. Norwegian's `ø` and Danish's
+  `æ` next to L, Icelandic's `þ`/`ð`, Belgian AZERTY's Q/A and W/Z swap).
+- **Expanded QWERTZ and AZERTY** - both existing European layouts now ship
+  with full top-top rows, punctuation, and their extended-European
+  characters (German ß/ö/ä/ü; French é/è/ç/à/ù).
+- **v2.0.0 legacy decrypt** - a self-contained `v2.0.0-legacy` decrypt path
+  recovers ciphertext produced by the original v2.0.0 Python and v2.0.0
+  JavaScript builds. The path uses dedicated `V200_*` constants and tries
+  both historical `pos_offset` variants. v2.0.0 keys are still rejected by
+  the K6-only encrypt enforcement.
+- **Materialized metadata toggle** - encrypt and decrypt now accept a
+  `materialize` boolean. When ON, the 44 metadata carriers are emitted as
+  visible ALPHA characters in a keyed `A,B,C,D` alphabet, so ciphertext
+  survives databases and APIs that strip zero-width characters. Toggle
+  mismatches fail closed and never fall through to legacy decrypt paths.
+  CLI exposes `--materialize`, interactive mode prompts before encrypt or
+  decrypt, and the browser, Electron, and docs builds expose a checkbox
+  with a "Receiver must use the same setting" hint.
+
+### Compatibility
+- All existing rc.6 keys continue to parse. New keyed permutations differ
+  from rc.6 because of the rejection-sampling change, so rc.7 ciphertext
+  is not decryptable by rc.6 builds, and vice versa.
+- The wire format and hidden metadata version character `5` are unchanged. The
+  active API format label remains `rc.6-stream`.
+- The default carrier mode remains zero-width hidden carriers; the
+  materialized path is strictly opt-in.
+- The new v2.0.0-legacy decrypt path is purely additive and never affects
+  rc.6 or later message decoding.
+
+---
+
 ## v3.0.0-rc.6 - Release Candidate 6
 
 ### Highlights

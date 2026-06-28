@@ -1,6 +1,6 @@
 /**
- * ENIGMAK v3.0.0-rc.6 - JavaScript module
- * 161-symbol multi-round substitution-permutation rotor cipher
+ * ENIGMAK v3.0.0-rc.7 - JavaScript module
+ * 162-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
  *   const { encrypt, decrypt, generateKey, calcIoC } = require('./enigmak.js');
@@ -18,15 +18,16 @@ const LEGACY_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' +
                      '!@#$%^&*()_+{}|:"<>?`~' +
                      'abcdefghijklmnopqrstuvwxyz ';
 const EXTENDED_ALPHA = 'ÀàÁáÂâÃãÄäÅåÆæÇçÈèÉéÊêËëÌìÍíÎîÏïÐðÑñÒòÓóÔôÕõÖöØøÙùÚúÛûÜüÝýÞþßÿ¡¿Œœ';
-const ALPHA = LEGACY_ALPHA + EXTENDED_ALPHA;
-// NOTE: Characters above index 94 (U+00C0 and beyond) are European extended
-// characters in temporary layout-unassigned state. They participate fully in
-// all cipher operations except keyboard layout substitution. Full layout
-// integration is planned for a future RC once per-layout positioning research
-// is complete.
+const ALPHA = LEGACY_ALPHA + EXTENDED_ALPHA + '\n';
+// NOTE: Newline (\n) at index 161 is permanently layout-unassigned (no physical
+// QWERTY key produces it directly) but participates fully in all keyed
+// permutations and cipher operations, so multi-line plaintext round-trips
+// without special handling. Characters above index 94 (U+00C0 and beyond) are
+// European extended characters that are assigned by the national language
+// layouts added in rc.7 and participate in all cipher operations.
 const LEGACY_N = LEGACY_ALPHA.length;
 const N = ALPHA.length;
-if (LEGACY_N !== 95 || N !== 161) throw new Error('ENIGMAK alphabet length mismatch');
+if (LEGACY_N !== 95 || N !== 162) throw new Error('ENIGMAK alphabet length mismatch');
 const N_BIG = BigInt(N);
 const LEGACY_N_BIG = BigInt(LEGACY_N);
 const STEP_MASK_ACTIVE = 66;
@@ -50,6 +51,7 @@ const BASE36_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const CARRIER_WILDCARD_DOMAIN = '|carrier-wildcards|';
 const STREAM_SCHEDULE_DOMAIN = '|stream-schedule|';
 const U64_MASK = (1n << 64n) - 1n;
+const TWO_64 = 1n << 64n;
 const FNV64_OFFSET = 0xcbf29ce484222325n;
 const FNV64_PRIME = 0x100000001b3n;
 const STEP_MASK_SEED_CONST = 0x5a5a5a5aa55aa55an;
@@ -81,7 +83,7 @@ const CLIPBOARD_NORMALIZATION_MAP = Object.freeze({
 
 const LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
                       'Norman','Asset','Halmak','AZERTY','QWERTZ',
-                      // National language layouts. LAYOUT_DEFS entries pending rc.7.
+                      // National language layouts sourced from Microsoft Windows DLLs.
                       'Spanish','Swedish','Norwegian','Danish','Icelandic','Belgian'];
 const LEGACY_LAYOUT_NAMES = LAYOUT_NAMES.slice(0, 10);
 
@@ -135,16 +137,52 @@ const LAYOUT_DEFS = {
     bot: 'qgvxpky,./QGVXPKY<>?',
   },
   'AZERTY': {
-    topTop: '`1234567890-=~!@#$%^&*()_+',
-    top: 'azertyuiop[]\\AZERTYUIOP{}|',
-    home: "qsdfghjkl;'QSDFGHJKL:\"",
-    bot: 'wxcvbnm,./WXCVBNM<>?',
+    topTop: '²&é"\'(-è_çà)=1234567890°+}',
+    top:    'azertyuiop^£AZERTYUIOP¨$',
+    home:   "qsdfghjklmù*QSDFGHJKLMµ",
+    bot:    'wxcvbn?,;:WXCVBN.!/§',
   },
   'QWERTZ': {
-    topTop: '`1234567890-=~!@#$%^&*()_+',
-    top: 'qwertzuiop[]\\QWERTZUIOP{}|',
-    home: "asdfghjkl;'ASDFGHJKL:\"",
-    bot: 'yxcvbnm,./YXCVBNM<>?',
+    topTop: '^1234567890ß`°!"§$%&/()=?\\',
+    top:    'qwertzuiopü+QWERTZUIOPÜ~',
+    home:   "asdfghjklöä#ASDFGHJKLÖÄ'",
+    bot:    'yxcvbnm,.-YXCVBNM;:_',
+  },
+  'Spanish': {
+    topTop: "º1234567890'¡ª!\"·$%&/()=?¿",
+    top:    'qwertyuiop`+QWERTYUIOP^*',
+    home:   "asdfghjklñç'ASDFGHJKLÑÇ\"",
+    bot:    'zxcvbnm,.-ZXCVBNM;:_',
+  },
+  'Swedish': {
+    topTop: '½1234567890+`§!"#¤%&/()=?\\',
+    top:    'qwertyuiopå^QWERTYUIOPÅ¨',
+    home:   "asdfghjklöä'ASDFGHJKLÖÄ*",
+    bot:    'zxcvbnm,.-ZXCVBNM;:_',
+  },
+  'Norwegian': {
+    topTop: '§1234567890+`|!"#¤%&/()=?\\',
+    top:    'qwertyuiopå^QWERTYUIOPÅ¨',
+    home:   "asdfghjkløæ'ASDFGHJKLØÆ*",
+    bot:    'zxcvbnm,.-ZXCVBNM;:_',
+  },
+  'Danish': {
+    topTop: '§1234567890+`½!"#¤%&/()=?\\',
+    top:    'qwertyuiopå^QWERTYUIOPÅ¨',
+    home:   "asdfghjklæø'ASDFGHJKLÆØ*",
+    bot:    'zxcvbnm,.-ZXCVBNM;:_',
+  },
+  'Icelandic': {
+    topTop: '¨1234567890ö_°!"#$%&/()=?-\\',
+    top:    'qwertyuiopð?QWERTYUIOPÐ~',
+    home:   "asdfghjklæ´ASDFGHJKLÆ^",
+    bot:    'zxcvbnm,.þZXCVBNM<>Þ',
+  },
+  'Belgian': {
+    topTop: '²&é"\'(§è!çà)-`³1234567890°_',
+    top:    'azertyuiop^$AZERTYUIOP¨£',
+    home:   'qsdfghjklmù%QSDFGHJKLMùµ',
+    bot:    'wxcvbn?,;:WXCVBN?./',
   },
 };
 
@@ -377,8 +415,12 @@ function shuffleIndicesWithSeed(size, seed) {
   const items = [...Array(size).keys()];
   let state = seed & U64_MASK;
   for (let i = items.length - 1; i > 0; i--) {
-    state = lcg64(state ^ BigInt(i));
-    const j = Number(state % BigInt(i + 1));
+    const limit = BigInt(i + 1);
+    const threshold = TWO_64 - (TWO_64 % limit);
+    do {
+      state = lcg64(state);
+    } while (state >= threshold);
+    const j = Number(state % limit);
     [items[i], items[j]] = [items[j], items[i]];
   }
   return items;
@@ -1495,12 +1537,65 @@ function tryDecodeRc6Metadata(carrierStream, keyStr) {
   return metadata;
 }
 
-function encryptRc6Stream(plaintext, key) {
+function keyedVisibleCarrierAlphabet(keyStr) {
+  // Visible carrier alphabet for materialized metadata: keyed order of A,B,C,D.
+  // Same Fisher-Yates-with-seed structure as keyedZeroWidthOrder, so the
+  // 4 carrier digit symbols rotate per key just like the zero-width digits do.
+  const symbols = [ALPHA[0], ALPHA[1], ALPHA[2], ALPHA[3]];
+  let state = hashStr64(`${keyStr}|matperm`);
+  for (let i = symbols.length - 1; i > 0; i--) {
+    state = lcg64(state ^ BigInt(i));
+    const j = Number(state % BigInt(i + 1));
+    [symbols[i], symbols[j]] = [symbols[j], symbols[i]];
+  }
+  return symbols;
+}
+
+function encodeVisibleCarrierChars(metadata, keyStr) {
+  const order = keyedVisibleCarrierAlphabet(keyStr);
+  let out = '';
+  for (const char of metadata) {
+    const index = ALPHA.indexOf(char);
+    if (index < 0) throw new Error(`Materialized metadata character is outside ALPHA: ${JSON.stringify(char)}`);
+    const digits = [0, 0, 0, 0];
+    let value = index;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      digits[i] = value % 4;
+      value = Math.floor(value / 4);
+    }
+    digits.forEach((digit) => { out += order[digit]; });
+  }
+  return out;
+}
+
+function decodeVisibleCarrierStream(stream, keyStr) {
+  if (stream.length % HIDDEN_CHUNK_LEN !== 0) {
+    throw new Error(`Materialized metadata carrier count must be a multiple of ${HIDDEN_CHUNK_LEN}`);
+  }
+  const order = keyedVisibleCarrierAlphabet(keyStr);
+  const reverse = new Map(order.map((symbol, index) => [symbol, index]));
+  let out = '';
+  for (let i = 0; i < stream.length; i += HIDDEN_CHUNK_LEN) {
+    let value = 0;
+    for (let j = 0; j < HIDDEN_CHUNK_LEN; j++) {
+      const digit = reverse.get(stream[i + j]);
+      if (digit === undefined) throw new Error('Unknown materialized metadata carrier symbol detected');
+      value = value * 4 + digit;
+    }
+    if (value >= N) throw new Error(`Materialized metadata digit block decodes outside ALPHA: ${value}`);
+    out += ALPHA[value];
+  }
+  return out;
+}
+
+function encryptRc6Stream(plaintext, key, materialize = false) {
   const payload = packRc6Payload(plaintext, key.keyStr);
   const checksum = computeChecksum(payload.visiblePayload, deriveMacSubkey(key.keyStr), payload.version);
-  const carrierStream = encodeHiddenCarrierChars(payload.version + checksum, key.keyStr);
+  const carrierStream = materialize
+    ? encodeVisibleCarrierChars(payload.version + checksum, key.keyStr)
+    : encodeHiddenCarrierChars(payload.version + checksum, key.keyStr);
   const schedule = buildStreamSchedule(key.keyStr, plaintext.length, payload.visiblePayload.length);
-  const wildcards = deriveCarrierWildcards(key.keyStr, HIDDEN_SYMBOL_COUNT);
+  const wildcards = materialize ? null : deriveCarrierWildcards(key.keyStr, HIDDEN_SYMBOL_COUNT);
   const state = createCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
 
   let payloadIndex = 0;
@@ -1515,36 +1610,54 @@ function encryptRc6Stream(plaintext, key) {
       out += processSegment(checksum[checksumIndex], state, false);
       checksumIndex++;
     } else {
-      processSegment(wildcards[carrierIndex], state, false);
-      out += carrierStream[carrierIndex];
+      if (materialize) {
+        out += processSegment(carrierStream[carrierIndex], state, false);
+      } else {
+        processSegment(wildcards[carrierIndex], state, false);
+        out += carrierStream[carrierIndex];
+      }
       carrierIndex++;
     }
   }
   return out;
 }
 
-function attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen) {
+function attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen, materialize = false) {
   let visibleLen = 0;
-  for (const char of ciphertext) if (!ZERO_WIDTH_SET.has(char)) visibleLen++;
-  const payloadLen = visibleLen - CHECKSUM_LEN;
+  let payloadLen;
+  if (materialize) {
+    visibleLen = ciphertext.length;
+    payloadLen = visibleLen - CHECKSUM_LEN - HIDDEN_SYMBOL_COUNT;
+  } else {
+    for (const char of ciphertext) if (!ZERO_WIDTH_SET.has(char)) visibleLen++;
+    payloadLen = visibleLen - CHECKSUM_LEN;
+  }
   if (payloadLen < 1 + LEN_FIELD_LEN) return null;
   const schedule = buildStreamSchedule(key.keyStr, plaintextLen, payloadLen);
   if (schedule.length !== ciphertext.length) return null;
 
-  const wildcards = deriveCarrierWildcards(key.keyStr, HIDDEN_SYMBOL_COUNT);
+  const wildcards = materialize ? null : deriveCarrierWildcards(key.keyStr, HIDDEN_SYMBOL_COUNT);
   const state = createCipherState(key.steckPairs, key.rotors, key.enabled, key.userRounds, key.nonce);
   let payload = '';
   let checksum = '';
   let carrierStream = '';
+  let visibleCarrierStream = '';
   let carrierIndex = 0;
 
   for (let i = 0; i < schedule.length; i++) {
     const event = schedule[i];
     const char = ciphertext[i];
     if (event === 'carrier') {
-      if (!ZERO_WIDTH_SET.has(char) || carrierIndex >= HIDDEN_SYMBOL_COUNT) return null;
-      processSegment(wildcards[carrierIndex], state, true);
-      carrierStream += char;
+      if (carrierIndex >= HIDDEN_SYMBOL_COUNT) return null;
+      if (materialize) {
+        if (!ALPHA.includes(char)) return null;
+        const value = processSegment(char, state, true);
+        visibleCarrierStream += value;
+      } else {
+        if (!ZERO_WIDTH_SET.has(char)) return null;
+        processSegment(wildcards[carrierIndex], state, true);
+        carrierStream += char;
+      }
       carrierIndex++;
       continue;
     }
@@ -1556,8 +1669,17 @@ function attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen) {
   }
   if (carrierIndex !== HIDDEN_SYMBOL_COUNT) return null;
 
-  const metadata = tryDecodeRc6Metadata(carrierStream, key.keyStr);
-  if (!metadata) return null;
+  let metadata;
+  if (materialize) {
+    try {
+      metadata = decodeVisibleCarrierStream(visibleCarrierStream, key.keyStr);
+    } catch (_) {
+      return null;
+    }
+  } else {
+    metadata = tryDecodeRc6Metadata(carrierStream, key.keyStr);
+    if (!metadata) return null;
+  }
   const visibleFields = unpackRc4VisiblePayload(payload);
   if (!visibleFields.structureOk || visibleFields.formatTag !== RC4_FORMAT_TAG) return null;
   if (visibleFields.plaintext.length !== plaintextLen) return null;
@@ -1586,6 +1708,7 @@ function attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen) {
     payload,
     visiblePayload: payload,
     format: 'rc.6-stream',
+    materialize,
     lengthField: visibleFields.lengthField,
     padding: visibleFields.padding,
     hiddenPayload: metadata,
@@ -1595,17 +1718,26 @@ function attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen) {
   return finalizeDecryptResult(result, visibleFields.plaintext, key.keyStr, state.km, state);
 }
 
-function decryptRc6Stream(ciphertext, key, diagnostics, extracted) {
-  if (extracted.hiddenCarrierCount !== HIDDEN_SYMBOL_COUNT) return null;
-  if (!tryDecodeRc6Metadata(extracted.carrierStream, key.keyStr)) return null;
-  const visibleLen = extracted.visibleText.length;
-  const payloadLen = visibleLen - CHECKSUM_LEN;
+function decryptRc6Stream(ciphertext, key, diagnostics, extracted, materialize = false) {
+  let visibleLen;
+  let payloadLen;
+  if (materialize) {
+    if (extracted.hiddenCarrierCount !== 0) return null;
+    for (const char of ciphertext) if (!ALPHA.includes(char)) return null;
+    visibleLen = ciphertext.length;
+    payloadLen = visibleLen - CHECKSUM_LEN - HIDDEN_SYMBOL_COUNT;
+  } else {
+    if (extracted.hiddenCarrierCount !== HIDDEN_SYMBOL_COUNT) return null;
+    if (!tryDecodeRc6Metadata(extracted.carrierStream, key.keyStr)) return null;
+    visibleLen = extracted.visibleText.length;
+    payloadLen = visibleLen - CHECKSUM_LEN;
+  }
   if (payloadLen < 1 + LEN_FIELD_LEN) return null;
 
   for (let padLen = 0; padLen < MAX_PAD_LEN; padLen++) {
     const plaintextLen = payloadLen - (1 + LEN_FIELD_LEN) - padLen;
     if (plaintextLen < 0) continue;
-    const result = attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen);
+    const result = attemptDecryptRc6Stream(ciphertext, key, diagnostics, plaintextLen, materialize);
     if (result && result.success) return result;
   }
   return null;
@@ -1748,19 +1880,462 @@ function encodeKey(enabled, rotors, steckPairs, userRounds, nonce = '') {
   return `${base} ${nonceStr}`;
 }
 
-function encrypt(plaintext, keyStr) {
+// ── v2.0.0 legacy decryption (self-contained, decrypt-only) ──────────────────
+// A complete reimplementation of the v2.0.0 cipher pipeline so rc.7 can recover
+// ciphertexts produced by v2.0.0. None of these symbols are reused by rc.6+; they
+// share only the variable-name patterns of the v2.0.0 source.
+
+const V200_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ;0123456789-=[]\\\',./' + '!@#$%^&*()_+{}|:"<>?`~';
+const V200_N = 68;
+const V200_CHECKSUM_LEN = 4;
+const V200_FNV_OFFSET = 2166136261;
+const V200_FNV_PRIME = 16777619;
+const V200_LCG_MULT = 1664525;
+const V200_LCG_INC = 1013904223;
+const V200_LCG_MASK = 0xFFFFFFFF;
+const V200_STEP_MASK_ACTIVE = 47;
+const V200_LAYOUT_NAMES = ['QWERTY','Colemak','Colemak-DH','Dvorak','Workman',
+                           'Norman','Asset','Halmak','AZERTY','QWERTZ'];
+const V200_LAYOUT_DEFS = {
+  'QWERTY':    { top: 'QWERTYUIOP', home: 'ASDFGHJKL;', bot: 'ZXCVBNM' },
+  'Colemak':   { top: 'QWFPGJLUY;', home: 'ARSTDHNEIO', bot: 'ZXCVBKM' },
+  'Colemak-DH':{ top: 'QWFPBJLUY;', home: 'ARSTGMNEIO', bot: 'ZXCDVKH' },
+  'Dvorak':    { top: "',.PYFGCRL", home: 'AOEUIDHTNS', bot: ';QJKXBM' },
+  'Workman':   { top: 'QDRWBJFUP;', home: 'ASHTGYNEOI', bot: 'ZXMCVKL' },
+  'Norman':    { top: 'QWDFKJURL;', home: 'ASETGYNIOH', bot: 'ZXCVBPM' },
+  'Asset':     { top: 'QWJFGYPUL;', home: 'ASETDHNIOR', bot: 'ZXCVBKM' },
+  'Halmak':    { top: 'WLRBJZFUO;', home: 'SHNTMEDAIC', bot: 'QGVXPKY' },
+  'AZERTY':    { top: 'AZERTYUIOP', home: 'QSDFGHJKL;', bot: 'WXCVBNM' },
+  'QWERTZ':    { top: 'QWERTZUIOP', home: 'ASDFGHJKL;', bot: 'YXCVBNM' },
+};
+const V200_QWERTY_TOP = 'QWERTYUIOP';
+const V200_QWERTY_HOME = 'ASDFGHJKL;';
+const V200_QWERTY_BOT = 'ZXCVBNM';
+
+function v200HashStr(s) {
+  let h = V200_FNV_OFFSET;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, V200_FNV_PRIME) >>> 0;
+  }
+  return h;
+}
+
+function v200Lcg(v) {
+  return (Math.imul(v, V200_LCG_MULT) + V200_LCG_INC) >>> 0;
+}
+
+function v200RotorStateHash(rotors) {
+  let h = V200_FNV_OFFSET;
+  for (const r of rotors) {
+    h ^= (r.pos * 73) >>> 0;
+    h = Math.imul(h, V200_FNV_PRIME) >>> 0;
+  }
+  return h;
+}
+
+function v200ComputeKeyMaterial(steckPairs, rotors, enabled, userRounds) {
+  let S = 0;
+  for (const [a, b] of steckPairs) {
+    const ai = V200_ALPHA.indexOf(a), bi = V200_ALPHA.indexOf(b);
+    S += Math.min(ai, bi) * V200_N + Math.max(ai, bi);
+  }
+  const R = rotors.reduce((acc, r) => acc + r.pos, 0);
+  const L = enabled.reduce((acc, n) => acc + V200_LAYOUT_NAMES.indexOf(n), 0);
+  const rounds = ((S + R + L + userRounds) % 999) + 1;
+  const keySum = ((Math.imul(S, 31) + Math.imul(R, 17) + Math.imul(L, 13)) >>> 0);
+
+  const stepPos = [...Array(V200_N).keys()];
+  let v = (keySum ^ 0x5A5A5A5A) >>> 0;
+  for (let i = V200_N - 1; i > 0; i--) {
+    v = v200Lcg(v);
+    const j = v % (i + 1);
+    [stepPos[i], stepPos[j]] = [stepPos[j], stepPos[i]];
+  }
+  const stepMask = new Array(V200_N).fill(false);
+  for (let i = 0; i < V200_STEP_MASK_ACTIVE; i++) stepMask[stepPos[i]] = true;
+
+  const transPerm = [...Array(V200_N).keys()];
+  v = (keySum ^ 0xDEAD1234) >>> 0;
+  for (let i = V200_N - 1; i > 0; i--) {
+    v = v200Lcg(v);
+    const j = v % (i + 1);
+    [transPerm[i], transPerm[j]] = [transPerm[j], transPerm[i]];
+  }
+  const invTransPerm = new Array(V200_N);
+  for (let i = 0; i < V200_N; i++) invTransPerm[transPerm[i]] = i;
+
+  const layoutKeyBase = keySum % V200_N;
+
+  const layoutMaps = {};
+  const invLayoutMaps = {};
+  V200_LAYOUT_NAMES.forEach((name, li) => {
+    const perm = [...Array(V200_N).keys()];
+    let v2 = (keySum ^ (Math.imul(li, 0x9E3779B9) + 0xABCD1234)) >>> 0;
+    for (let i = V200_N - 1; i > 0; i--) {
+      v2 = v200Lcg(v2);
+      const j = v2 % (i + 1);
+      [perm[i], perm[j]] = [perm[j], perm[i]];
+    }
+    const fwd = {}, inv = {};
+    for (let i = 0; i < V200_N; i++) {
+      fwd[V200_ALPHA[i]] = V200_ALPHA[perm[i]];
+      inv[V200_ALPHA[perm[i]]] = V200_ALPHA[i];
+    }
+    layoutMaps[name] = fwd;
+    invLayoutMaps[name] = inv;
+  });
+
+  const whiteningSeed = (keySum ^ 0xC0FFEE42) >>> 0;
+  return { rounds, keySum, stepMask, transPerm, invTransPerm, layoutKeyBase, layoutMaps, invLayoutMaps, whiteningSeed };
+}
+
+function v200KeyedLayoutOffset(name, layoutKeyBase) {
+  return (V200_LAYOUT_NAMES.indexOf(name) * 7 + layoutKeyBase) % V200_N;
+}
+
+function v200RotorShift(rotors) {
+  let val = 0n;
+  const Nb = BigInt(V200_N);
+  rotors.forEach((r, i) => { val += BigInt(r.pos) * (Nb ** BigInt(rotors.length - 1 - i)); });
+  return Number(val % Nb);
+}
+
+function v200AdvanceRotors(rotors, charIdx, stepMask) {
+  if (!stepMask[charIdx % V200_N]) return rotors.map(r => ({ ...r }));
+  const rs = rotors.map(r => ({ ...r }));
+  rs[rs.length - 1].pos = (rs[rs.length - 1].pos + 1) % V200_N;
+  for (let i = rs.length - 1; i > 0; i--) {
+    if (rs[i].pos === 0) rs[i - 1].pos = (rs[i - 1].pos + 1) % V200_N;
+  }
+  return rs;
+}
+
+function v200ApplyNonce(rotors, nonce) {
+  if (!nonce) return rotors.map(r => ({ ...r }));
+  return rotors.map((r, i) => {
+    const off = i < nonce.length ? V200_ALPHA.indexOf(nonce[i]) : 0;
+    return { ...r, pos: (r.pos + (off < 0 ? 0 : off)) % V200_N };
+  });
+}
+
+function v200ApplyLayout(c, name, shift, invert, lm, ilm) {
+  if (!invert) {
+    let x = lm[name][c] ?? c;
+    if (V200_ALPHA.includes(x)) x = V200_ALPHA[(V200_ALPHA.indexOf(x) + shift) % V200_N];
+    return x;
+  }
+  let x = c;
+  if (V200_ALPHA.includes(x)) x = V200_ALPHA[((V200_ALPHA.indexOf(x) - shift) % V200_N + V200_N) % V200_N];
+  return ilm[name][x] ?? x;
+}
+
+function v200PlugFwd(c, layouts, lm) {
+  for (const n of layouts) c = lm[n][c] ?? c;
+  return c;
+}
+
+function v200PlugInv(c, layouts, ilm) {
+  for (let i = layouts.length - 1; i >= 0; i--) c = ilm[layouts[i]][c] ?? c;
+  return c;
+}
+
+function v200Process(text, key, decryptFlag, variant) {
+  const km = v200ComputeKeyMaterial(key.steckPairs, key.rotors, key.enabled, key.userRounds);
+  const rds = km.rounds;
+  const steckMap = {};
+  for (const ch of V200_ALPHA) steckMap[ch] = ch;
+  for (const [a, b] of key.steckPairs) { steckMap[a] = b; steckMap[b] = a; }
+  const rotorSet = new Set(key.rotors.map(r => r.layout));
+  const el = [...key.enabled];
+  const unused = el.filter(n => !rotorSet.has(n));
+  let rs = v200ApplyNonce(key.rotors, key.nonce);
+  const lm = km.layoutMaps;
+  const ilm = km.invLayoutMaps;
+  let wstate = km.whiteningSeed;
+  let result = '';
+  let ci = 0;
+  for (const c of text) {
+    const ch = (c >= 'a' && c <= 'z') ? c.toUpperCase() : c;
+    if (!V200_ALPHA.includes(ch)) { result += c; continue; }
+    const ss = v200RotorShift(rs);
+    const stepLayouts = [];
+    for (let r = 0; r < rds; r++) stepLayouts.push(el[r % el.length]);
+    const rsHash = v200RotorStateHash(rs);
+    let posOffset;
+    if (variant === 'py') {
+      posOffset = ((km.keySum * 37 + ci * 13 + rsHash) % V200_N + V200_N) % V200_N;
+    } else {
+      posOffset = ((Math.imul(km.layoutKeyBase, 37) + ci * 13 + rsHash) >>> 0) % V200_N;
+    }
+    const stepShifts = stepLayouts.map((lay, r) =>
+      (ss + r + ci + posOffset + v200KeyedLayoutOffset(lay, km.layoutKeyBase)) % V200_N);
+    const scrambleShifts = unused.map((u, i) =>
+      (ss + rds + i + ci + posOffset + v200KeyedLayoutOffset(u, km.layoutKeyBase)) % V200_N);
+    let x = ch;
+    if (!decryptFlag) {
+      x = steckMap[x];
+      x = v200PlugFwd(x, unused, lm);
+      for (let r = 0; r < rds; r++) x = v200ApplyLayout(x, stepLayouts[r], stepShifts[r], false, lm, ilm);
+      if (V200_ALPHA.includes(x)) x = V200_ALPHA[km.transPerm[V200_ALPHA.indexOf(x)]];
+      for (let i = 0; i < unused.length; i++) x = v200ApplyLayout(x, unused[i], scrambleShifts[i], false, lm, ilm);
+      x = v200PlugFwd(x, unused, lm);
+      x = steckMap[x];
+      wstate = v200Lcg(wstate);
+      x = V200_ALPHA[(V200_ALPHA.indexOf(x) + wstate % V200_N) % V200_N];
+    } else {
+      wstate = v200Lcg(wstate);
+      x = V200_ALPHA[((V200_ALPHA.indexOf(x) - wstate % V200_N) % V200_N + V200_N) % V200_N];
+      x = steckMap[x];
+      x = v200PlugInv(x, unused, ilm);
+      for (let i = unused.length - 1; i >= 0; i--) x = v200ApplyLayout(x, unused[i], scrambleShifts[i], true, lm, ilm);
+      if (V200_ALPHA.includes(x)) x = V200_ALPHA[km.invTransPerm[V200_ALPHA.indexOf(x)]];
+      for (let r = rds - 1; r >= 0; r--) x = v200ApplyLayout(x, stepLayouts[r], stepShifts[r], true, lm, ilm);
+      x = v200PlugInv(x, unused, ilm);
+      x = steckMap[x];
+    }
+    result += x;
+    rs = v200AdvanceRotors(rs, ci, km.stepMask);
+    ci++;
+  }
+  return result;
+}
+
+function v200ComputeChecksum(plaintext, keyStr) {
+  const h1 = v200HashStr(plaintext + '|' + keyStr + '|chk1');
+  const h2 = v200HashStr(plaintext + '|' + keyStr + '|chk2');
+  let v = (h1 ^ ((h2 << 16) >>> 0)) >>> 0;
+  let out = '';
+  for (let i = 0; i < V200_CHECKSUM_LEN; i++) {
+    v = v200Lcg(v);
+    out += V200_ALPHA[v % V200_N];
+  }
+  return out;
+}
+
+function v200ChecksumPos(keyStr, totalLen) {
+  const h = v200HashStr(keyStr + 'chkpos');
+  return h % Math.max(1, totalLen - V200_CHECKSUM_LEN);
+}
+
+function v200StripChecksum(ciphertext, keyStr) {
+  const pos = v200ChecksumPos(keyStr, ciphertext.length);
+  const chk = ciphertext.slice(pos, pos + V200_CHECKSUM_LEN);
+  const stripped = ciphertext.slice(0, pos) + ciphertext.slice(pos + V200_CHECKSUM_LEN);
+  return { stripped, chk };
+}
+
+function v200SentenceCaseForChecksum(text) {
+  const lower = text.toLowerCase();
+  if (!lower) return lower;
+  return lower[0].toUpperCase() + lower.slice(1);
+}
+
+function v200VerifyChecksum(chk, stripped, plaintext, keyStr) {
+  if (chk === v200ComputeChecksum(stripped, keyStr)) return 'stripped';
+  if (chk === v200ComputeChecksum(plaintext, keyStr)) return 'plain';
+  const folded = v200SentenceCaseForChecksum(plaintext);
+  if (chk === v200ComputeChecksum(folded, keyStr)) return 'sentence';
+  return null;
+}
+
+function v200ParseKey(keyStr) {
+  if (keyStr.trim().split(/\s+/)[0].startsWith(KEY_V6_PREFIX)) return null;
+  const parts = keyStr.trim().split(/\s+/);
+  if (parts.length !== 4 && parts.length !== 5) return null;
+  const [enabledStr, rotorStr, steckStr, uStr] = parts;
+  const nonceStr = parts.length === 5 ? parts[4] : '';
+  try {
+    const enabledIndices = [...enabledStr].map(c => Number(c));
+    if (enabledIndices.length === 0 || enabledIndices.some(i => !Number.isInteger(i) || i >= V200_LAYOUT_NAMES.length || i < 0)) return null;
+    const enabled = enabledIndices.map(i => V200_LAYOUT_NAMES[i]);
+    if (rotorStr.length === 0 || rotorStr.length % 3 !== 0) return null;
+    const rotors = [];
+    for (let i = 0; i < rotorStr.length; i += 3) {
+      const lidx = Number(rotorStr[i]);
+      const pos = Number(rotorStr.slice(i + 1, i + 3));
+      if (!Number.isInteger(lidx) || !Number.isInteger(pos) || lidx >= V200_LAYOUT_NAMES.length || pos >= V200_N) return null;
+      rotors.push({ layout: V200_LAYOUT_NAMES[lidx], pos });
+    }
+    const steckPairs = [];
+    if (steckStr !== '0') {
+      if (steckStr.length % 4 !== 0) return null;
+      for (let i = 0; i < steckStr.length; i += 4) {
+        const ai = Number(steckStr.slice(i, i + 2));
+        const bi = Number(steckStr.slice(i + 2, i + 4));
+        if (!Number.isInteger(ai) || !Number.isInteger(bi) || ai >= V200_N || bi >= V200_N) return null;
+        steckPairs.push([V200_ALPHA[ai], V200_ALPHA[bi]]);
+      }
+    }
+    const userRounds = Number(uStr);
+    if (!Number.isInteger(userRounds)) return null;
+    let nonce = '';
+    if (nonceStr) {
+      if (nonceStr.length % 2 !== 0) return null;
+      for (let i = 0; i < nonceStr.length; i += 2) {
+        const idx = Number(nonceStr.slice(i, i + 2));
+        if (!Number.isInteger(idx) || idx >= V200_N) return null;
+        nonce += V200_ALPHA[idx];
+      }
+    }
+    return { enabled, rotors, steckPairs, userRounds, nonce, keyStr: keyStr.trim() };
+  } catch (_) {
+    return null;
+  }
+}
+
+function v200TryDecrypt(ciphertext, keyStr) {
+  for (const ch of ciphertext) {
+    const isPrintable = ch >= ' ' && ch <= '~';
+    if (isPrintable && !V200_ALPHA.includes(ch) && ch !== ' ') return null;
+  }
+  const key = v200ParseKey(keyStr);
+  if (key === null) return null;
+  if (ciphertext.length <= V200_CHECKSUM_LEN) return null;
+  for (const variant of ['py', 'js']) {
+    try {
+      const { stripped, chk } = v200StripChecksum(ciphertext, key.keyStr);
+      const plaintext = v200Process(stripped, key, true, variant);
+      const verifyMode = v200VerifyChecksum(chk, stripped, plaintext, key.keyStr);
+      if (verifyMode !== null) return { plaintext, variant, verifyMode };
+    } catch (_) {
+      continue;
+    }
+  }
+  return null;
+}
+
+function encodeV200KeyString(parsed) {
+  const enabledList = [...parsed.enabled];
+  if (enabledList.length === 0) return null;
+  const enabledStr = enabledList.map((name) => {
+    const idx = V200_LAYOUT_NAMES.indexOf(name);
+    if (idx < 0) return null;
+    return String(idx);
+  });
+  if (enabledStr.some((value) => value === null)) return null;
+
+  let rotorStr = '';
+  for (const rotor of parsed.rotors) {
+    const lidx = V200_LAYOUT_NAMES.indexOf(rotor.layout);
+    if (lidx < 0 || rotor.pos >= V200_N || !enabledList.includes(rotor.layout)) return null;
+    rotorStr += `${lidx}${String(rotor.pos).padStart(2, '0')}`;
+  }
+  if (!rotorStr) return null;
+
+  let steckStr = '0';
+  if (parsed.steckPairs.length > 0) {
+    steckStr = '';
+    for (const [a, b] of parsed.steckPairs) {
+      const ai = V200_ALPHA.indexOf(a);
+      const bi = V200_ALPHA.indexOf(b);
+      if (ai < 0 || bi < 0) return null;
+      steckStr += `${String(ai).padStart(2, '0')}${String(bi).padStart(2, '0')}`;
+    }
+  }
+
+  const roundsStr = String(parsed.userRounds).padStart(3, '0');
+  let key = `${enabledStr.join('')} ${rotorStr} ${steckStr} ${roundsStr}`;
+  if (parsed.nonce) {
+    let nonceStr = '';
+    for (const ch of parsed.nonce) {
+      const idx = V200_ALPHA.indexOf(ch);
+      if (idx < 0) return null;
+      nonceStr += String(idx).padStart(2, '0');
+    }
+    key += ` ${nonceStr}`;
+  }
+  return key;
+}
+
+function collectV200KeyCandidates(keyStr, extraCandidates = []) {
+  const candidates = [];
+  const seen = new Set();
+  const add = (value) => {
+    const trimmed = (value || '').trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+  add(keyStr);
+  for (const value of extraCandidates) add(value);
+  if (v200ParseKey(keyStr)) add(keyStr);
+  try {
+    add(encodeV200KeyString(parseKey(keyStr)));
+  } catch (_) {}
+  return candidates;
+}
+
+function v200TryDecryptWithCandidates(ciphertext, keyStr, extraCandidates = []) {
+  for (const candidate of collectV200KeyCandidates(keyStr, extraCandidates)) {
+    const result = v200TryDecrypt(ciphertext, candidate);
+    if (result !== null) return { ...result, keyStr: candidate };
+  }
+  return null;
+}
+
+function finalizeV200DecryptResult(v200Result, diagnostics, visibleText) {
+  return finalizeDecryptResult({
+    plaintext: v200Result.plaintext,
+    verified: true,
+    checksumOk: true,
+    paddingOk: true,
+    structureOk: true,
+    metadataOk: true,
+    versionOk: true,
+    lengthField: '',
+    padding: '',
+    error: null,
+    format: 'v2.0.0-legacy',
+    variant: v200Result.variant,
+    diagnostics,
+    payload: visibleText,
+  }, v200Result.plaintext, v200Result.keyStr, {}, { km: {}, rotors: [] });
+}
+
+
+function encrypt(plaintext, keyStr, opts) {
   if (!keyStr.trim().split(/\s+/)[0].startsWith(KEY_V6_PREFIX)) {
     throw new Error(K6_ENCRYPT_REQUIRED_ERROR);
   }
+  const materialize = !!(opts && opts.materialize);
   const key = parseKey(keyStr);
-  return encryptRc6Stream(plaintext, key);
+  return encryptRc6Stream(plaintext, key, materialize);
 }
 
-function decrypt(ciphertext, keyStr) {
+function decrypt(ciphertext, keyStr, opts) {
+  const materialize = !!(opts && opts.materialize);
+  const extraKeyCandidates = (opts && opts.keyCandidates) || [];
   const diagnostics = analyzeCiphertext(ciphertext);
   const extracted = extractCarrierInfo(ciphertext);
   const visibleText = extracted.visibleText;
+
+  const v200Result = v200TryDecryptWithCandidates(visibleText, keyStr, extraKeyCandidates);
+  if (v200Result !== null) {
+    return finalizeV200DecryptResult(v200Result, diagnostics, visibleText);
+  }
+
   const key = parseKey(keyStr);
+
+  if (materialize) {
+    const rc6Result = decryptRc6Stream(ciphertext, key, diagnostics, extracted, true);
+    if (rc6Result !== null) return rc6Result;
+    return genericDecryptFailure({
+      plaintext: '',
+      verified: false,
+      checksumOk: false,
+      paddingOk: false,
+      structureOk: false,
+      metadataOk: false,
+      versionOk: false,
+      diagnostics,
+      payload: '',
+      visiblePayload: '',
+      format: 'rc.6-stream',
+      materialize: true,
+      error: GENERIC_DECRYPT_ERROR,
+    }, '', key.keyStr);
+  }
 
   const rc6Result = decryptRc6Stream(ciphertext, key, diagnostics, extracted);
   if (rc6Result !== null) return rc6Result;

@@ -21,16 +21,14 @@ public scrutiny.
 
 - **Not formally audited.** ENIGMAK has not undergone professional
   cryptanalytic review.
-- **161-symbol alphabet with passthrough.** The active cipher operates on a
-  161-symbol `ALPHA` (legacy printable ASCII plus European extended
-  characters). Characters outside `ALPHA` pass through unchanged on encrypt and
-  do not advance rotor state. On the `rc.6-stream` decrypt path, any visible
+- **162-symbol alphabet with passthrough.** The active cipher operates on a
+  162-symbol `ALPHA` (legacy printable ASCII, European extended characters, and
+  newline). Characters outside `ALPHA` pass through unchanged on encrypt and do
+  not advance rotor state. On the `rc.6-stream` decrypt path, any visible
   non-carrier stream character outside `ALPHA` causes verification failure.
-- **Extended characters and layouts.** European extended characters (indices
-  95 and above) participate in stecker, diffusion, whitening, and keyed layout
-  permutations, but static ergonomic keyboard-layout substitution does not yet
-  assign them to physical keys. National layout labels are reserved for a
-  future release.
+- **Extended characters and layouts.** European extended characters and newline
+  participate in stecker, diffusion, whitening, and keyed layout permutations.
+  RC7 includes static layout definitions for all 16 layout labels.
 - **Key reuse.** Reusing a key across messages creates correlated ciphertext
   and is strongly discouraged.
 - **Checksum is not AEAD.** The `rc.6-stream` format protects version,
@@ -40,9 +38,14 @@ public scrutiny.
   44 invisible metadata carriers. Use exact copy/export paths; terminal
   highlighting can omit those characters. Python interactive encryption copies
   exact output to the system clipboard to avoid this failure mode.
+- **Materialized metadata transport.** The optional materialized mode emits the
+  same 44 carrier events as visible `ALPHA` characters for carrier-hostile
+  databases and APIs. Sender and receiver must use the same setting; mismatches
+  fail closed.
 - **Stream schedule integrity.** `rc.6-stream` interleaves payload symbols,
   scattered checksum symbols, and zero-width carriers in a keyed order.
   Removing or reordering checksum or carrier symbols must fail verification.
+  There is no fixed visible checksum prefix in new ciphertext.
 - **Phantom carrier advancement.** Zero-width carrier positions advance cipher
   state through key-derived wildcard alphabet characters. Tampering with
   carriers desynchronizes decryption.
@@ -77,6 +80,10 @@ public scrutiny.
 - `v3.0.0-rc.6` introduced `rc.6-stream` with scattered encrypted checksum
   characters, phantom advancement at carrier positions, a 161-symbol alphabet,
   `K6:` base36 key encoding, and a `ROUND_MINIMUM` floor of 10 derived rounds.
+- `v3.0.0-rc.7` expanded `ALPHA` to 162 symbols by adding newline, switched
+  keyed shuffles to rejection sampling, added materialized metadata transport,
+  filled all 16 static layout definitions, and added original `v2.0.0-legacy`
+  decrypt support.
 
 ## Recommended Usage
 
@@ -86,6 +93,8 @@ public scrutiny.
 - Verify the key fingerprint verbally before use.
 - Prefer `rc.6-stream` for all new messages.
 - Preserve zero-width metadata when copying or exporting ciphertext.
+- Use materialized metadata only when the transport cannot preserve zero-width
+  carriers, and tell the receiver to use the same setting.
 - Prefer clipboard or interactive mode for Python CLI decryption of real
   ciphertext, and rely on the interactive encryption clipboard copy rather than
   manually highlighting terminal output.

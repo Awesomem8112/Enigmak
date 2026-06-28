@@ -1,7 +1,7 @@
 # ENIGMAK
 
 ENIGMAK is a custom multi-round substitution-permutation rotor cipher with a
-161-symbol alphabet.
+162-symbol alphabet.
 
 ## Security Disclaimer
 
@@ -11,14 +11,16 @@ those purposes, use AES-256 or another formally audited standard.
 
 ## Current Protocol Snapshot
 
-The current workspace target is `v3.0.0-rc.6`. Its active new-message format
-is `rc.6-stream`, which uses:
+The current workspace target is `v3.0.0-rc.7`. Its active new-message API
+format label is still `rc.6-stream`, with hidden metadata version character
+`5`. This is the version-5 stream wire format carried forward into RC7, and it
+uses:
 
-- a 161-symbol alphabet with printable ASCII plus European extended characters
-- 1-18 rotors with a `66/161` irregular step mask
+- a 162-symbol alphabet with printable ASCII, European extended characters, and `\n`
+- 1-18 rotors with a `66/162` irregular step mask
 - up to 80 stecker pairs
 - keyed full-alphabet layout permutations
-- keyed 161-position diffusion
+- keyed 162-position diffusion
 - 64-bit seeded state for all current deterministic key-derived math
 - rotor-state feedback in position offsets
 - position whitening
@@ -26,6 +28,7 @@ is `rc.6-stream`, which uses:
 - scattered encrypted checksum characters
 - hidden metadata carrying version + checksum as zero-width markers
 - key-derived phantom rotor advancement at zero-width marker positions
+- an opt-in materialized carrier mode for transports that strip zero-width text
 - deterministic keyed padding that depends on plaintext, key, checksum, and version
 - random key generation with a `256` bit minimum acceptance floor
 - backward-compatible decrypt support for `rc.4-hidden`, headed `rc.3`, and legacy `rc.2`
@@ -36,14 +39,17 @@ is `rc.6-stream`, which uses:
 
 - **Stream format** - new ciphertext uses `rc.6-stream`, with encrypted checksum
   characters scattered through the stream and zero-width carriers advanced by
-  deterministic phantom characters.
+  deterministic phantom characters. There is no fixed visible checksum prefix.
+- **Materialized metadata option** - the same stream format can emit its 44
+  metadata carriers as visible `ALPHA` characters for storage systems that strip
+  zero-width text. Sender and receiver must use the same setting.
 - **Backward-compatible decryption** - decryptors still accept old `E3|`
   `rc.3` messages, legacy unheaded `rc.2` ciphertext, and `rc.4-hidden`
   ciphertext from rc.4 and rc.5.
 - **64-bit keyed core** - current key-derived permutation seeding, step mask
   seeding, whitening, rotor-state hashing, and related state all use 64-bit
   arithmetic in the active `rc.6` emit path.
-- **1-18 rotors** - irregular key-derived stepping with a `66/161` mask.
+- **1-18 rotors** - irregular key-derived stepping with a `66/162` mask.
 - **Steckerbrett** - up to 80 symmetric character-pair swaps.
 - **16 keyed layout permutations** - stable layout labels seed independent
   key-derived permutations of the full alphabet.
@@ -68,7 +74,9 @@ is `rc.6-stream`, which uses:
 4. Use `Copy exact output`, Python interactive clipboard copy, or another lossless plain-text path when moving
    ciphertext. New messages contain invisible zero-width markers that must be
    preserved exactly.
-5. Share the nonce alongside the ciphertext when one is present.
+5. Turn on materialized metadata only when the receiver will use the same
+   setting.
+6. Share the nonce alongside the ciphertext when one is present.
 
 Python CLI alternatives for shell-sensitive ciphertext:
 
@@ -92,7 +100,8 @@ Payload characters, checksum characters, and zero-width carriers are walked in
 a deterministic key-derived schedule. Payload and checksum characters are
 encrypted through the full cipher pipeline. Each zero-width carrier advances the
 rotor state with a key-derived phantom alphabet character before the carrier is
-emitted.
+emitted. Because checksum characters and carriers participate in the same walk,
+the old fixed checksum-prefix structure is gone.
 
 Zero-width carriers are chosen from:
 
@@ -103,9 +112,13 @@ Zero-width carriers are chosen from:
 Removing a checksum character or carrier turns a valid `rc.6-stream` message
 into a verification failure.
 
+When materialized metadata is enabled, the 44 carrier events are emitted as
+visible `ALPHA` characters instead of zero-width markers and are encrypted as
+normal stream participants. Toggle mismatches fail closed.
+
 ## Key Format
 
-The serialized key format keeps the same sections, but rc.6 keys use a `K6:`
+The serialized key format keeps the same sections, but current keys use a `K6:`
 prefix and base36 alphabet indexes so positions above 99 and layouts above 9
 can be represented:
 
@@ -135,6 +148,7 @@ The root browser build, docs mirror, and Electron HTML build now:
   and no nonce
 - expose collapsible `Layouts`, `Rotors`, `Steckerbrett`, and `Key` panels
 - warn when hidden carrier counts look damaged or metadata appears stripped
+- expose a materialized metadata checkbox with a receiver-must-match hint
 - let plaintext and ciphertext boxes resize vertically
 
 ## Desktop App
