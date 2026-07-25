@@ -21,6 +21,16 @@ public scrutiny.
 
 - **Not formally audited.** ENIGMAK has not undergone professional
   cryptanalytic review.
+- **From-scratch BLAKE3 port.** As of `v3.0.0-rc.8`, live seed derivation uses
+  an embedded, from-scratch implementation of BLAKE3 (default `hash` mode
+  only), not a binding to the audited reference BLAKE3 library. It is validated
+  against the official BLAKE3 test vectors in all four implementations
+  (Python, JavaScript, browser, Electron), which confirms byte-for-byte
+  agreement with the reference algorithm but is not a substitute for an
+  independent audit of this port. The `keyed_hash` and `derive_key` modes are
+  not implemented. A hand-written primitive carries more implementation-bug
+  risk than a widely used library binding; the test-vector validation is the
+  mitigation for that risk.
 - **162-symbol alphabet with passthrough.** The active cipher operates on a
   162-symbol `ALPHA` (legacy printable ASCII, European extended characters, and
   newline). Characters outside `ALPHA` pass through unchanged on encrypt and do
@@ -84,6 +94,12 @@ public scrutiny.
   keyed shuffles to rejection sampling, added materialized metadata transport,
   filled all 16 static layout definitions, and added original `v2.0.0-legacy`
   decrypt support.
+- `v3.0.0-rc.8` replaced FNV-1a seed derivation across the live cipher pipeline
+  with the embedded BLAKE3 hash, removing reliance on a non-cryptographic hash
+  with known collisions and no preimage resistance. The rc.4-hidden, rc.3,
+  rc.2, and `v2.0.0-legacy` decrypt paths retain frozen FNV-1a copies so older
+  ciphertext stays decryptable. The wire format is unchanged, so rc.8 builds
+  produce different `rc.6-stream` ciphertext than rc.7 for the same key.
 
 ## Recommended Usage
 

@@ -1,6 +1,6 @@
 # ENIGMAK Technical Notes
 
-This document describes the current `v3.0.0-rc.7` design at a high level. Its
+This document describes the current `v3.0.0-rc.8` design at a high level. Its
 active new-message API format label is `rc.6-stream`, with hidden metadata
 version character `5`. It complements `SPECIFICATION.md`, not replaces it.
 
@@ -85,6 +85,12 @@ The stream schedule seed is domain-separated from the main cipher seed:
 hash64(keyStr + "|stream-schedule|" + str(plaintext_len))
 ```
 
+As of `v3.0.0-rc.8`, `hash64` and `hash32` are backed by an embedded,
+zero-dependency BLAKE3 hash (default `hash` mode): `hash64` is the first 8
+bytes of the 32-byte digest and `hash32` is the first 4 bytes, both big-endian
+unsigned. Earlier release candidates used FNV-1a here; the legacy decrypt paths
+keep frozen FNV-1a copies.
+
 The schedule advances with `LCG64`, mixing in the current stream index, and
 selects among the remaining payload, checksum, and carrier event counts. Python
 integer arithmetic and JavaScript `BigInt` arithmetic must agree exactly.
@@ -149,19 +155,22 @@ with `ROUND_MINIMUM = 10`.
 
 ## 64-Bit Current Path
 
-The active RC7 path uses 64-bit state for:
+The active rc.8 path uses 64-bit state for:
 
-- rotor-state hash
-- key sum
+- rotor-state hash (BLAKE3-derived)
+- key sum (arithmetic, not hashed)
 - step-mask seeding
 - diffusion permutation seeding
 - per-layout permutation seeding
 - whitening stream
-- stream schedule and carrier-wildcard seeds
-- hidden carrier digit permutation
+- stream schedule and carrier-wildcard seeds (BLAKE3-derived)
+- hidden carrier digit permutation (BLAKE3-derived)
 
-Legacy `rc.3`, `rc.4-hidden`, and `rc.2` decrypt paths retain their historical
-derivation rules on the 95-symbol legacy alphabet where required.
+The `hash64` / `hash32` seed values are produced by the embedded BLAKE3 hash as
+of `v3.0.0-rc.8` (see the schedule-seed note above); the `keySum` and the
+permutation seeds derived from it remain plain 64-bit arithmetic. Legacy `rc.3`,
+`rc.4-hidden`, and `rc.2` decrypt paths retain their historical derivation rules
+(frozen FNV-1a) on the 95-symbol legacy alphabet where required.
 
 ## Keygen
 

@@ -11,9 +11,9 @@ those purposes, use AES-256 or another formally audited standard.
 
 ## Current Protocol Snapshot
 
-The current workspace target is `v3.0.0-rc.7`. Its active new-message API
+The current workspace target is `v3.0.0-rc.8`. Its active new-message API
 format label is still `rc.6-stream`, with hidden metadata version character
-`5`. This is the version-5 stream wire format carried forward into RC7, and it
+`5`. This is the version-5 stream wire format carried forward into rc.8, and it
 uses:
 
 - a 162-symbol alphabet with printable ASCII, European extended characters, and `\n`
@@ -21,6 +21,8 @@ uses:
 - up to 80 stecker pairs
 - keyed full-alphabet layout permutations
 - keyed 162-position diffusion
+- BLAKE3-derived seeds for all live key-derived math (first 8 and 4 digest
+  bytes as 64-bit and 32-bit big-endian integers), replacing rc.7's FNV-1a
 - 64-bit seeded state for all current deterministic key-derived math
 - rotor-state feedback in position offsets
 - position whitening
@@ -46,6 +48,11 @@ uses:
 - **Backward-compatible decryption** - decryptors still accept old `E3|`
   `rc.3` messages, legacy unheaded `rc.2` ciphertext, and `rc.4-hidden`
   ciphertext from rc.4 and rc.5.
+- **BLAKE3 seed derivation** - as of rc.8, key-derived permutation seeding,
+  step mask seeding, whitening, rotor-state hashing, MAC subkey, stream
+  schedule, and carrier wildcards all derive from an embedded zero-dependency
+  BLAKE3 hash (validated against the official BLAKE3 test vectors) instead of
+  FNV-1a. Legacy rc.4/rc.3/rc.2 and v2.0.0 decrypt paths keep frozen FNV-1a.
 - **64-bit keyed core** - current key-derived permutation seeding, step mask
   seeding, whitening, rotor-state hashing, and related state all use 64-bit
   arithmetic in the active `rc.6` emit path.

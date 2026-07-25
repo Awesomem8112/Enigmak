@@ -1,5 +1,5 @@
 /**
- * ENIGMAK v3.0.0-rc.7 - JavaScript module
+ * ENIGMAK v3.0.0-rc.8 - JavaScript module
  * 162-symbol multi-round substitution-permutation rotor cipher
  *
  * Usage (Node.js):
@@ -325,7 +325,201 @@ function finalizeDecryptResult(result, partialText = '', keyStr = null, keyMater
   return genericDecryptFailure(result, partialText, keyStr, keyMaterial, cipherState);
 }
 
+// ---------------------------------------------------------------------------
+// BLAKE3 (default "hash" mode) - zero-dependency from-scratch port.
+// Used for all live rc.8 seed derivation. Validated against the official
+// BLAKE3 test vectors. keyed_hash / derive_key modes are intentionally omitted.
+// ---------------------------------------------------------------------------
+const _BLAKE3_IV = [
+  0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+  0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
+];
+const _BLAKE3_MSG_PERMUTATION = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+const _BLAKE3_CHUNK_START = 1;
+const _BLAKE3_CHUNK_END = 2;
+const _BLAKE3_PARENT = 4;
+const _BLAKE3_ROOT = 8;
+const _BLAKE3_BLOCK_LEN = 64;
+const _BLAKE3_CHUNK_LEN = 1024;
+
+function _blake3Rotr(x, n) {
+  return ((x >>> n) | (x << (32 - n))) >>> 0;
+}
+
+function _blake3G(state, a, b, c, d, mx, my) {
+  state[a] = (state[a] + state[b] + mx) >>> 0;
+  state[d] = _blake3Rotr((state[d] ^ state[a]) >>> 0, 16);
+  state[c] = (state[c] + state[d]) >>> 0;
+  state[b] = _blake3Rotr((state[b] ^ state[c]) >>> 0, 12);
+  state[a] = (state[a] + state[b] + my) >>> 0;
+  state[d] = _blake3Rotr((state[d] ^ state[a]) >>> 0, 8);
+  state[c] = (state[c] + state[d]) >>> 0;
+  state[b] = _blake3Rotr((state[b] ^ state[c]) >>> 0, 7);
+}
+
+function _blake3Round(state, m) {
+  _blake3G(state, 0, 4, 8, 12, m[0], m[1]);
+  _blake3G(state, 1, 5, 9, 13, m[2], m[3]);
+  _blake3G(state, 2, 6, 10, 14, m[4], m[5]);
+  _blake3G(state, 3, 7, 11, 15, m[6], m[7]);
+  _blake3G(state, 0, 5, 10, 15, m[8], m[9]);
+  _blake3G(state, 1, 6, 11, 12, m[10], m[11]);
+  _blake3G(state, 2, 7, 8, 13, m[12], m[13]);
+  _blake3G(state, 3, 4, 9, 14, m[14], m[15]);
+}
+
+function _blake3Compress(cv, blockWords, counter, blockLen, flags) {
+  const counterLow = (counter >>> 0);
+  const counterHigh = (Math.floor(counter / 4294967296) >>> 0);
+  const state = [
+    cv[0], cv[1], cv[2], cv[3], cv[4], cv[5], cv[6], cv[7],
+    _BLAKE3_IV[0], _BLAKE3_IV[1], _BLAKE3_IV[2], _BLAKE3_IV[3],
+    counterLow, counterHigh, blockLen >>> 0, flags >>> 0,
+  ];
+  let m = blockWords.slice(0, 16);
+  for (let r = 0; r < 7; r++) {
+    _blake3Round(state, m);
+    if (r < 6) {
+      const permuted = new Array(16);
+      for (let i = 0; i < 16; i++) permuted[i] = m[_BLAKE3_MSG_PERMUTATION[i]];
+      m = permuted;
+    }
+  }
+  for (let i = 0; i < 8; i++) {
+    state[i] = (state[i] ^ state[i + 8]) >>> 0;
+    state[i + 8] = (state[i + 8] ^ cv[i]) >>> 0;
+  }
+  return state;
+}
+
+function _blake3WordsFromBlock(block) {
+  const words = new Array(16);
+  for (let i = 0; i < 16; i++) {
+    const o = i * 4;
+    words[i] = (block[o] | (block[o + 1] << 8) | (block[o + 2] << 16) | (block[o + 3] << 24)) >>> 0;
+  }
+  return words;
+}
+
+function _blake3ChunkOutput(chunk, chunkCounter) {
+  let cv = _BLAKE3_IV.slice(0, 8);
+  const blockCount = Math.max(1, Math.ceil(chunk.length / _BLAKE3_BLOCK_LEN));
+  for (let i = 0; i < blockCount; i++) {
+    const raw = chunk.slice(i * _BLAKE3_BLOCK_LEN, (i + 1) * _BLAKE3_BLOCK_LEN);
+    const blockLen = raw.length;
+    const block = new Uint8Array(_BLAKE3_BLOCK_LEN);
+    block.set(raw);
+    const words = _blake3WordsFromBlock(block);
+    let flags = 0;
+    if (i === 0) flags |= _BLAKE3_CHUNK_START;
+    if (i === blockCount - 1) {
+      flags |= _BLAKE3_CHUNK_END;
+      return { cv, words, counter: chunkCounter, blockLen, flags };
+    }
+    cv = _blake3Compress(cv, words, chunkCounter, blockLen, flags).slice(0, 8);
+  }
+  return {
+    cv, words: new Array(16).fill(0), counter: chunkCounter, blockLen: 0,
+    flags: _BLAKE3_CHUNK_START | _BLAKE3_CHUNK_END,
+  };
+}
+
+function _blake3ParentOutput(leftCv, rightCv) {
+  return {
+    cv: _BLAKE3_IV.slice(0, 8), words: leftCv.concat(rightCv), counter: 0,
+    blockLen: _BLAKE3_BLOCK_LEN, flags: _BLAKE3_PARENT,
+  };
+}
+
+function _blake3OutputCv(output) {
+  return _blake3Compress(output.cv, output.words, output.counter, output.blockLen, output.flags).slice(0, 8);
+}
+
+function _blake3RootBytes(output, outLen) {
+  const out = new Uint8Array(outLen);
+  let written = 0;
+  let outCounter = 0;
+  while (written < outLen) {
+    const words16 = _blake3Compress(output.cv, output.words, outCounter, output.blockLen, output.flags | _BLAKE3_ROOT);
+    for (let i = 0; i < 16 && written < outLen; i++) {
+      const w = words16[i];
+      for (let b = 0; b < 4 && written < outLen; b++) {
+        out[written++] = (w >>> (8 * b)) & 0xff;
+      }
+    }
+    outCounter++;
+  }
+  return out;
+}
+
+function _blake3LargestPowerOfTwoLeq(n) {
+  let p = 1;
+  while ((p << 1) <= n) p <<= 1;
+  return p;
+}
+
+function _blake3LeftLen(contentLen) {
+  const fullChunks = Math.floor((contentLen - 1) / _BLAKE3_CHUNK_LEN);
+  return _blake3LargestPowerOfTwoLeq(fullChunks) * _BLAKE3_CHUNK_LEN;
+}
+
+function _blake3HashRecurse(data, chunkCounter) {
+  if (data.length <= _BLAKE3_CHUNK_LEN) {
+    return _blake3ChunkOutput(data, chunkCounter);
+  }
+  const leftLen = _blake3LeftLen(data.length);
+  const left = _blake3HashRecurse(data.slice(0, leftLen), chunkCounter);
+  const right = _blake3HashRecurse(data.slice(leftLen), chunkCounter + (leftLen / _BLAKE3_CHUNK_LEN));
+  return _blake3ParentOutput(_blake3OutputCv(left), _blake3OutputCv(right));
+}
+
+function blake3Hash(data, outLen) {
+  if (outLen === undefined) outLen = 32;
+  let bytes;
+  if (typeof data === 'string') {
+    bytes = new TextEncoder().encode(data);
+  } else {
+    bytes = data;
+  }
+  const output = _blake3HashRecurse(bytes, 0);
+  return _blake3RootBytes(output, outLen);
+}
+
 function hashStr32(s) {
+  // rc.8 live seed derivation: first 4 digest bytes, big-endian unsigned.
+  const d = blake3Hash(s);
+  return ((d[0] * 16777216) + (d[1] * 65536) + (d[2] * 256) + d[3]) >>> 0;
+}
+
+function lcg64(v) {
+  return (v * 6364136223846793005n + 1442695040888963407n) & U64_MASK;
+}
+
+function hashStr64(s) {
+  // rc.8 live seed derivation: first 8 digest bytes, big-endian unsigned.
+  const d = blake3Hash(s);
+  let h = 0n;
+  for (let i = 0; i < 8; i++) h = (h << 8n) | BigInt(d[i]);
+  return h;
+}
+
+// Frozen FNV-1a primitives for legacy decrypt paths (rc.4-hidden, rc.3, rc.2).
+// These reproduce the pre-rc.8 hash behaviour so legacy ciphertext stays
+// decryptable after the live pipeline moves to BLAKE3. They must never change.
+const LEGACY_FNV64_OFFSET = FNV64_OFFSET;
+const LEGACY_FNV64_PRIME = FNV64_PRIME;
+
+function _legacyFnvHash64(s) {
+  const bytes = new TextEncoder().encode(s);
+  let h = LEGACY_FNV64_OFFSET;
+  for (const b of bytes) {
+    h ^= BigInt(b);
+    h = (h * LEGACY_FNV64_PRIME) & U64_MASK;
+  }
+  return h;
+}
+
+function _legacyFnvHash32(s) {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
@@ -334,18 +528,49 @@ function hashStr32(s) {
   return h;
 }
 
-function lcg64(v) {
-  return (v * 6364136223846793005n + 1442695040888963407n) & U64_MASK;
+function _legacyDeriveMacSubkey(keyStr) {
+  // Frozen FNV copy of deriveMacSubkey for the rc.4-hidden decrypt path.
+  return _legacyFnvHash64(keyStr + '\x01enigmak-mac').toString();
 }
 
-function hashStr64(s) {
-  const bytes = new TextEncoder().encode(s);
-  let h = FNV64_OFFSET;
-  for (const b of bytes) {
-    h ^= BigInt(b);
-    h = (h * FNV64_PRIME) & U64_MASK;
+function _legacyComputePadLength(plaintext, keyStr, checksum, versionChar) {
+  // Frozen FNV copy of computePadLength for the rc.4-hidden decrypt path.
+  let length = Number(_legacyFnvHash64(`${keyStr}|${plaintext}|${checksum}|${versionChar}|padlen`) % BigInt(MAX_PAD_LEN));
+  if (plaintext.length === 0 && length === 0) length = 1;
+  return length;
+}
+
+function _legacyKeyedZeroWidthOrder(keyStr) {
+  // Frozen FNV copy of keyedZeroWidthOrder for the rc.4-hidden decrypt path.
+  const symbols = [...ZERO_WIDTH_SYMBOLS];
+  let state = _legacyFnvHash64(`${keyStr}|zwperm`);
+  for (let i = symbols.length - 1; i > 0; i--) {
+    state = lcg64(state ^ BigInt(i));
+    const j = Number(state % BigInt(i + 1));
+    [symbols[i], symbols[j]] = [symbols[j], symbols[i]];
   }
-  return h;
+  return symbols;
+}
+
+function _legacyDecodeHiddenCarrierStream(carrierStream, keyStr) {
+  // Frozen FNV copy of decodeHiddenCarrierStream for the rc.4-hidden path.
+  if (carrierStream.length % HIDDEN_CHUNK_LEN !== 0) {
+    throw new Error(`Hidden metadata carrier count must be a multiple of ${HIDDEN_CHUNK_LEN}`);
+  }
+  const order = _legacyKeyedZeroWidthOrder(keyStr);
+  const reverse = new Map(order.map((symbol, index) => [symbol, index]));
+  let out = '';
+  for (let i = 0; i < carrierStream.length; i += HIDDEN_CHUNK_LEN) {
+    let value = 0;
+    for (let j = 0; j < HIDDEN_CHUNK_LEN; j++) {
+      const digit = reverse.get(carrierStream[i + j]);
+      if (digit === undefined) throw new Error('Unknown hidden metadata carrier symbol detected');
+      value = value * 4 + digit;
+    }
+    if (value >= N) throw new Error(`Hidden metadata digit block decodes outside ALPHA: ${value}`);
+    out += ALPHA[value];
+  }
+  return out;
 }
 
 function deriveMacSubkey(keyStr) {
@@ -427,12 +652,10 @@ function shuffleIndicesWithSeed(size, seed) {
 }
 
 function rotorStateHash(rotors) {
-  let h = FNV64_OFFSET;
-  rotors.forEach((rotor, index) => {
-    h ^= (BigInt(rotor.pos * 73 + index + 1)) & U64_MASK;
-    h = (h * FNV64_PRIME) & U64_MASK;
-  });
-  return h;
+  // rc.8: BLAKE3-derived from a canonical rotor serialization. The legacy
+  // rc.3/rc.4 paths keep their own frozen FNV copies of this function.
+  const parts = rotors.map((rotor, index) => String(rotor.pos * 73 + index + 1));
+  return hashStr64('rotor-state|' + parts.join('|'));
 }
 
 function computeKeyMaterial(steckPairs, rotors, enabledLayouts, userRounds) {
@@ -1062,7 +1285,7 @@ function decodeLegacyLengthField(field) {
 
 function computeLegacyAlphabetChecksum(checksumInput, keyStr, versionChar = RC4_VERSION_CHAR) {
   let out = '';
-  let state = hashStr64(`${checksumInput}|${keyStr}|${versionChar}|chk64`);
+  let state = _legacyFnvHash64(`${checksumInput}|${keyStr}|${versionChar}|chk64`);
   for (let i = 0; i < CHECKSUM_LEN; i++) {
     state = lcg64(state ^ BigInt(i));
     out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
@@ -1088,7 +1311,7 @@ function computePaddingSeed(plaintext, keyStr, lenField = null, versionChar = RC
 function computeRc3Checksum(plaintext, keyStr, lenField = null) {
   const field = lenField ?? encodeLegacyLengthField(plaintext.length);
   let out = '';
-  let state = hashStr64(`${field}|${plaintext}|${keyStr}|chk64`);
+  let state = _legacyFnvHash64(`${field}|${plaintext}|${keyStr}|chk64`);
   for (let i = 0; i < CHECKSUM_LEN; i++) {
     state = lcg64(state ^ BigInt(i));
     out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
@@ -1098,7 +1321,7 @@ function computeRc3Checksum(plaintext, keyStr, lenField = null) {
 
 function legacyComputeChecksum(plaintext, keyStr) {
   let out = '';
-  let state = hashStr64(`${plaintext}|${keyStr}|chk64`);
+  let state = _legacyFnvHash64(`${plaintext}|${keyStr}|chk64`);
   for (let i = 0; i < CHECKSUM_LEN; i++) {
     state = lcg64(state ^ BigInt(i));
     out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
@@ -1107,7 +1330,7 @@ function legacyComputeChecksum(plaintext, keyStr) {
 }
 
 function legacyChecksumPos(keyStr, totalLen) {
-  return hashStr32(`${keyStr}chkpos`) % Math.max(1, totalLen - CHECKSUM_LEN);
+  return _legacyFnvHash32(`${keyStr}chkpos`) % Math.max(1, totalLen - CHECKSUM_LEN);
 }
 
 function computePadLength(plaintext, keyStr, checksum, versionChar) {
@@ -1134,10 +1357,10 @@ function computeLegacyPaddingSeed(plaintext, keyStr, lenField = null, versionCha
 }
 
 function generateLegacyPadding(plaintext, keyStr, checksum, versionChar, padLen = null) {
-  const targetLen = padLen ?? computePadLength(plaintext, keyStr, checksum, versionChar);
+  const targetLen = padLen ?? _legacyComputePadLength(plaintext, keyStr, checksum, versionChar);
   if (targetLen === 0) return '';
   let out = '';
-  let state = hashStr64(`${keyStr}|${plaintext}|${checksum}|${versionChar}|padfill`);
+  let state = _legacyFnvHash64(`${keyStr}|${plaintext}|${checksum}|${versionChar}|padfill`);
   for (let i = 0; i < targetLen; i++) {
     state = lcg64(state ^ BigInt(i));
     out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
@@ -1146,14 +1369,14 @@ function generateLegacyPadding(plaintext, keyStr, checksum, versionChar, padLen 
 }
 
 function computeRc3PadLength(plaintext, keyStr) {
-  return Number(hashStr64(`${keyStr}|${plaintext}|padlen`) % BigInt(MAX_PAD_LEN));
+  return Number(_legacyFnvHash64(`${keyStr}|${plaintext}|padlen`) % BigInt(MAX_PAD_LEN));
 }
 
 function generateRc3Padding(plaintext, keyStr, padLen = null) {
   const targetLen = padLen ?? computeRc3PadLength(plaintext, keyStr);
   if (targetLen === 0) return '';
   let out = '';
-  let state = hashStr64(`${keyStr}|${plaintext}|padfill`);
+  let state = _legacyFnvHash64(`${keyStr}|${plaintext}|padfill`);
   for (let i = 0; i < targetLen; i++) {
     state = lcg64(state ^ BigInt(i));
     out += LEGACY_ALPHA[Number(state % LEGACY_N_BIG)];
@@ -2408,7 +2631,7 @@ function decrypt(ciphertext, keyStr, opts) {
 
     let hiddenCipher;
     try {
-      hiddenCipher = decodeHiddenCarrierStream(extracted.carrierStream, key.keyStr);
+      hiddenCipher = _legacyDecodeHiddenCarrierStream(extracted.carrierStream, key.keyStr);
     } catch (_) {
       return genericDecryptFailure({
         ...baseResult,
@@ -2427,9 +2650,9 @@ function decrypt(ciphertext, keyStr, opts) {
     const version = hiddenPayload[0];
     const checksum = hiddenPayload.slice(1);
     const versionOk = version === RC4_VERSION_CHAR;
-    const checksumOk = versionOk && checksum === computeLegacyAlphabetChecksum(visibleText, deriveMacSubkey(key.keyStr), version);
+    const checksumOk = versionOk && checksum === computeLegacyAlphabetChecksum(visibleText, _legacyDeriveMacSubkey(key.keyStr), version);
     const paddingSeed = versionOk ? computeLegacyPaddingSeed(visibleFields.plaintext, key.keyStr, visibleFields.lengthField, version) : '';
-    const expectedPadLen = versionOk ? computePadLength(visibleFields.plaintext, key.keyStr, paddingSeed, version) : 0;
+    const expectedPadLen = versionOk ? _legacyComputePadLength(visibleFields.plaintext, key.keyStr, paddingSeed, version) : 0;
     const expectedPadding = versionOk ? generateLegacyPadding(visibleFields.plaintext, key.keyStr, paddingSeed, version, expectedPadLen) : '';
     const paddingOk = versionOk && visibleFields.padding.length === expectedPadLen && visibleFields.padding === expectedPadding;
     const verified = versionOk && checksumOk && paddingOk;

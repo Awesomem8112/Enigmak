@@ -1,6 +1,6 @@
 # ENIGMAK Desktop App
 
-This folder contains the Electron wrapper for the ENIGMAK `v3.0.0-rc.7`
+This folder contains the Electron wrapper for the ENIGMAK `v3.0.0-rc.8`
 machine.
 
 ## Requirements

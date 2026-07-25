@@ -1,8 +1,10 @@
 # Test Vectors
 
-These vectors target release candidate `v3.0.0-rc.7`. They are RC7 ciphertext
+These vectors target release candidate `v3.0.0-rc.8`. They are rc.8 ciphertext
 outputs even though the runtime API format label remains **`rc.6-stream`** with
-hidden metadata version character **`5`**.
+hidden metadata version character **`5`**. rc.8 derives all live seeds with the
+embedded BLAKE3 hash, so these ciphertexts differ from the rc.7 vectors for the
+same key and plaintext even though the wire format is unchanged.
 
 The live alphabet has **162** symbols: 95 legacy printable ASCII characters, 66
 European extended characters, plus newline. See `ALPHA` in
@@ -33,7 +35,7 @@ The checksum is computed over the **packed visible payload** (the `H` tag,
 length field, plaintext, and padding **before** stream scheduling) using
 `deriveMacSubkey(keyStr)`, not over the raw plaintext alone.
 
-## RC7 Stream Vector 1
+## RC8 Stream Vector 1
 
 **Key:** `K6:0 000 0 013`  
 **Plaintext JSON:** `"HELLOWORLD"`  
@@ -46,22 +48,22 @@ HELLOWORLD
 **Ciphertext (escaped):**
 
 ```text
-"\u200d\u00f3\u200c\u200d\u200d\u200c\u200b\u2060\u2060Q\u200d?\u00c9H\u2060\u200cQ\u2060\u00ee\u200b\u200d\u200b:b5\u200c\u200b\u200b\u00cf\u200d\u200c\u200b\u200b\u200dn\u2060\u200c\u200d\u00f2f\"\u00e5\u00e70\u200d\u2060\u00f1qm\u200d\u2060\u00cf\u200d\u200cC\u200d\u200c\u00f0\u200b\u200c\u00d5\u00f0\u200d\u00c6\u200dX\u200b\u200b\u200d\u200b\u200d\u200b"
+"9\u00ed\u00e9\u00e4\u200c\u200b\u00f6\u200c\u200c\u200c\u2060}\u200b\u00d4\u200b;\u200cH\u200c\u200c\u200b\u00e3_\u200b\u200d\u200c\u2060\u200d\u200c\u200d\u200d\u200c\u200d\u200c\u200b\u200d\u2060]\u00eb\u00f6\u200b\u00c9YJ\u00c0\u200c\u200c\u00fe\u200b&\u00d3\u200b\u2060\u200c\u200d\u200b\u2060S\u200dn\u200cU\u200c\u200b\u200d\u00ee\u200d\u2060\u200b\u00cb\u00d4"
 ```
 
-**Visible body (escaped):** `"\u00f3Q?\u00c9HQ\u00ee:b5\u00cfn\u00f2f\"\u00e5\u00e70\u00f1qm\u00cfC\u00f0\u00d5\u00f0\u00c6X"`  
+**Visible body (escaped):** `"9\u00ed\u00e9\u00e4\u00f6}\u00d4;H\u00e3_]\u00eb\u00f6\u00c9YJ\u00c0\u00fe&\u00d3SnU\u00ee\u00cb\u00d4"`  
 **Hidden carrier count:** `44`  
 **Expected runtime format label:** `rc.6-stream`
 
 **Materialized ciphertext (escaped):**
 
 ```text
-"B\u00f3*\u00f8xFHA\u00c1Q\u00e2?\u00c9Hh\u0153Q@\u00eeW@a:b5\u00d6<@\u00cf\n8\u00fd\u00c7#n*\u00f1&\u00f2f\"\u00e5\u00e70v\u00c1\u00f1qm[\u00ff\u00cfZ^C!\u00cd\u00f01E\u00d5\u00f0\"\u00c6oX\u00d3r;\u00dbu\u00ff"
+"9\u00ed\u00e9\u00e4\u00c9\u00e8\u00f6\u00d9\u00c5=o}D\u00d4\u00fa;?H\u00f9$\u00e2\u00e3_|@MEgX7\u00e8N+;-\"\u00c9]\u00eb\u00f6\u00fe\u00c9YJ\u00c0z\u00d3\u00fez&\u00d3,\u00a1H\\\u00c8YS\u00e2n\u00e0U\u00daxm\u00ee\u00d9~P\u00cb\u00d4"
 ```
 
 **Expected runtime format label:** `rc.6-stream (materialized)`
 
-## RC7 Stream Vector 2
+## RC8 Stream Vector 2
 
 **Key:** `K6:0 000 0 013`  
 **Plaintext JSON:**
@@ -79,14 +81,14 @@ UPPER lower [] {} `~ with spaces and words
 **Ciphertext (escaped):**
 
 ```text
-"\u00e8\u200dA\u200c\u00e1eV%\u200d\u200dY\u200b\u200d\u00cfV\u200d\u00ee\u00ecR\u00dba\u00f5\u200d\u00f1\u00f5\u200d\u00d95\u200b\u200c\u00d2\u00fb\u200c\u00db\u200d\u00fb\u00ed\u200d\u200d\u2060%6\u200be\u200b.(;\u200dmj\u200by\u00c2B8\u00ed\u00c6\u200b\u200c\u200b\u200d\u200d&\u200do\u200d\u200c\u00f0[\u00ff\u200c\u200cza\u200d\u200b_\u200c\u200c\u200dO\u200b\u200b\u00d2\u200c\u00fb\u00f9\u200b2\u00c8\u200cs\u200d3F\u00eb\u00ec\u2060\u2060\u200d"
+"\u200c\u200bD\u200c\u200c\u200c\u00f6\u2060\u200b$o\u200b\u00ec\u00d1\u200dw{'\u200c\u00ce\u00d2\u200b\u200c\u200b:\u200c\u2060r\u00e2Y'\u200d\u200b^\u200d\u200d\u00cc\u2060\u00a1\n\u200dM\u00c2\u00da\u00dca\u200bx\u00d0s\u200cW-\u200b\u00da\u00d5\u00e0\u200c\u200c23U\u200c\u200b\u200d,t\u200b\u200d\u00f8\u00bf\u200d]\u200d\u2060J\u00d0q\u200d\u200d\u00cb\u200cD\u2060\u00d1;\u00c9\u20606+7\u00f5[\u200bDz\u200c\u00db\u00cc\u01539\u200d\u200c\u200c\u00c1R=\u00d63"
 ```
 
-**Visible body (escaped):** `"\u00e8A\u00e1eV%Y\u00cfV\u00ee\u00ecR\u00dba\u00f5\u00f1\u00f5\u00d95\u00d2\u00fb\u00db\u00fb\u00ed%6e.(;mjy\u00c2B8\u00ed\u00c6&o\u00f0[\u00ffza_O\u00d2\u00fb\u00f92\u00c8s3F\u00eb\u00ec"`  
+**Visible body (escaped):** `"D\u00f6$o\u00ec\u00d1w{'\u00ce\u00d2:r\u00e2Y'^\u00cc\u00a1\nM\u00c2\u00da\u00dcax\u00d0sW-\u00da\u00d5\u00e023U,t\u00f8\u00bf]J\u00d0q\u00cbD\u00d1;\u00c96+7\u00f5[Dz\u00db\u00cc\u01539\u00c1R=\u00d63"`  
 **Hidden carrier count:** `44`  
 **Expected runtime format label:** `rc.6-stream`
 
-## RC7 Stream Vector 3
+## RC8 Stream Vector 3
 
 **Key:** `K6:1 102103 0 050`  
 **Plaintext JSON:** `"Hello World"`  
@@ -99,14 +101,14 @@ Hello World
 **Ciphertext (escaped):**
 
 ```text
-"\u2060\u00f0#X\u200b\u2060\u2060+\u20607\u00f4\u00e9#^\u200d\u200b\u200c\u200c\u00cf\u200b\u2060\u200d\u200b\u00ea\u2060\u200c\u2060\u2060\u2060\u200d\u2060\u200b\u00cf\u200ch\u00c0;\u200c\u00dc\u200d\u00e2!\u200c\u200b\u2060\u00da\u200d\u206082\u200c\u00a1\u200c\u200b\u200c\u200c\u00bf\u00e4\u2060\u2060\u2060\u00e2\u00ffp\u2060k\u200d\u00e6\u200c\u2060\u200b\u2060\u200c\\"
+"J\u200b\u20609\u00fb\u200b\u200b\u00d9\u200b2 \u200c\u00ee\u00c2\u200d\u200d\u00c5.\u200c\u200d\u200d\u200d\u2060\u200c\u00d4\u200b\u00df{\u2060\u200b\u2060$\u200d\u00d5\u2060\u200b\u00ca\u2060\u200b\u200c\u2060\u200b\u200dV\u200c\u2060%t\u200b\u00eb\u2060]\u00c5\u2060\u200cb\u200b\u00cd\u200c\u200bKv\u2060\u00ec\u200c\u200c\u200d\u200b\u200cs\u200d\u200d"
 ```
 
-**Visible body (escaped):** `"\u00f0#X+7\u00f4\u00e9#^\u00cf\u00ea\u00cfh\u00c0;\u00dc\u00e2!\u00da82\u00a1\u00bf\u00e4\u00e2\u00ffpk\u00e6\\"`  
+**Visible body (escaped):** `"J9\u00fb\u00d92 \u00ee\u00c2\u00c5.\u00d4\u00df{$\u00d5\u00caV%t\u00eb]\u00c5b\u00cdKv\u00ecs"`  
 **Hidden carrier count:** `44`  
 **Expected runtime format label:** `rc.6-stream`
 
-## RC7 Stream Vector 4
+## RC8 Stream Vector 4
 
 **Key:** `K6:0 000 0 013`  
 **Plaintext JSON:** `"Line one\nLine two"`  
@@ -120,10 +122,10 @@ Line two
 **Ciphertext (escaped):**
 
 ```text
-"\u00e8&AU\u200dS\u200c \u200d\u00d9\u00de\u200d\u200b%T\u2060]\\'\u200c\u200c\u00f5\u200d\u200d\u00f5\u200c\u200c\u200bV\u200b\u200c\u2060\u00ea\u200cr\u00e7K\u200d\u200c([\u200b\u200c\u200b\u200c\u200c\u200d\u00fc\u200c\u200d\u200c\u00e7L\u200b\u200c*\u00c4\\8=\u200cD\u200bCl\u200d>n\u200bC\u200c\u00f0\u0152m\u2060\u200d\u00f5t\u200d\u200d\u200d\u00ee$z\u200b\u200d\u200cY\u200d\u00e0"
+"\u00d4\u00dd\u00fc\u200c\u200bH*\u200c\"\u00fd\u200c\u200cv\u200c\u200b2\u200b\u200d\u2060\u2060Z\u00dd\u200b\u200d\u200c\u200c\u00dc\u2060\u00e8\u200c\u200c\u200c\u2060\u200c\u00ce\u200d\u200d:\u200b\u00d0\u00fb\u200c\u2060\u00cb\u200c\u200c\u200bp\u200d\u2060{\u200d\u00fc\u200c?\u00e5\u00f6\u200b?\u00d3\u200c\u00f9 \u00ca\u2060\u200cw\u200c\u200d\u00e1\u00d2\u200b\u200d\u200b\u200c\u200c"
 ```
 
-**Visible body (escaped):** `"\u00e8&AUS \u00d9\u00de%T]\\'\u00f5\u00f5V\u00ear\u00e7K([\u00fc\u00e7L*\u00c4\\8=DCl>nC\u00f0\u0152m\u00f5t\u00ee$zY\u00e0"`  
+**Visible body (escaped):** `"\u00d4\u00dd\u00fcH*\"\u00fdv2Z\u00dd\u00dc\u00e8\u00ce:\u00d0\u00fb\u00cbp{\u00fc?\u00e5\u00f6?\u00d3\u00f9 \u00caw\u00e1\u00d2"`  
 **Hidden carrier count:** `44`  
 **Expected runtime format label:** `rc.6-stream`
 
@@ -159,7 +161,7 @@ stream-format detection.
 
 ## Verification Checklist
 
-A correct `v3.0.0-rc.7` implementation must:
+A correct `v3.0.0-rc.8` implementation must:
 
 1. Produce the exact `rc.6-stream` ciphertext above for the same plaintext and key.
 2. Emit new ciphertext without a visible `E3|` header.
@@ -183,3 +185,10 @@ A correct `v3.0.0-rc.7` implementation must:
 14. Generate default random keys with at least `256` family bits.
 15. Advance cipher state with key-derived phantom characters at all `44`
     zero-width carrier positions.
+16. Derive all live seeds with the embedded BLAKE3 hash. Validate the BLAKE3
+    `hash` mode against the official BLAKE3 `test_vectors.json` (empty, short,
+    and multi-chunk inputs) in each implementation, and confirm `hash_str64` /
+    `hash_str32` return the first 8 and 4 digest bytes as big-endian unsigned
+    integers identically across Python, JavaScript, browser, and Electron.
+17. Fail closed (generic `Decryption failed.`) when given rc.7-produced
+    `rc.6-stream` ciphertext under the same key, since seed derivation changed.

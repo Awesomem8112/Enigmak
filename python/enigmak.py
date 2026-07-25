@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v3.0.0-rc.7 - Command-line cipher machine
+ENIGMAK v3.0.0-rc.8 - Command-line cipher machine
 161-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
@@ -320,12 +320,145 @@ def _finalize_decrypt_result(result, partial_text='', key_str=None, key_material
     return _generic_decrypt_failure(result, partial_text, key_str, key_material, cipher_state)
 
 
+# ---------------------------------------------------------------------------
+# BLAKE3 (default "hash" mode) - zero-dependency from-scratch port.
+# Used for all live rc.8 seed derivation. Validated against the official
+# BLAKE3 test vectors. keyed_hash / derive_key modes are intentionally omitted.
+# ---------------------------------------------------------------------------
+_BLAKE3_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+              0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)
+_BLAKE3_MSG_PERMUTATION = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
+_BLAKE3_CHUNK_START = 1
+_BLAKE3_CHUNK_END = 2
+_BLAKE3_PARENT = 4
+_BLAKE3_ROOT = 8
+_BLAKE3_BLOCK_LEN = 64
+_BLAKE3_CHUNK_LEN = 1024
+_BLAKE3_U32 = 0xFFFFFFFF
+
+
+def _blake3_rotr(x, n):
+    return ((x >> n) | (x << (32 - n))) & _BLAKE3_U32
+
+
+def _blake3_g(state, a, b, c, d, mx, my):
+    state[a] = (state[a] + state[b] + mx) & _BLAKE3_U32
+    state[d] = _blake3_rotr(state[d] ^ state[a], 16)
+    state[c] = (state[c] + state[d]) & _BLAKE3_U32
+    state[b] = _blake3_rotr(state[b] ^ state[c], 12)
+    state[a] = (state[a] + state[b] + my) & _BLAKE3_U32
+    state[d] = _blake3_rotr(state[d] ^ state[a], 8)
+    state[c] = (state[c] + state[d]) & _BLAKE3_U32
+    state[b] = _blake3_rotr(state[b] ^ state[c], 7)
+
+
+def _blake3_round(state, m):
+    _blake3_g(state, 0, 4, 8, 12, m[0], m[1])
+    _blake3_g(state, 1, 5, 9, 13, m[2], m[3])
+    _blake3_g(state, 2, 6, 10, 14, m[4], m[5])
+    _blake3_g(state, 3, 7, 11, 15, m[6], m[7])
+    _blake3_g(state, 0, 5, 10, 15, m[8], m[9])
+    _blake3_g(state, 1, 6, 11, 12, m[10], m[11])
+    _blake3_g(state, 2, 7, 8, 13, m[12], m[13])
+    _blake3_g(state, 3, 4, 9, 14, m[14], m[15])
+
+
+def _blake3_compress(cv, block_words, counter, block_len, flags):
+    state = [
+        cv[0], cv[1], cv[2], cv[3], cv[4], cv[5], cv[6], cv[7],
+        _BLAKE3_IV[0], _BLAKE3_IV[1], _BLAKE3_IV[2], _BLAKE3_IV[3],
+        counter & _BLAKE3_U32, (counter >> 32) & _BLAKE3_U32, block_len, flags,
+    ]
+    m = list(block_words)
+    for r in range(7):
+        _blake3_round(state, m)
+        if r < 6:
+            m = [m[_BLAKE3_MSG_PERMUTATION[i]] for i in range(16)]
+    for i in range(8):
+        state[i] ^= state[i + 8]
+        state[i + 8] ^= cv[i]
+    return state
+
+
+def _blake3_words_from_block(block):
+    return [int.from_bytes(block[i:i + 4], 'little')
+            for i in range(0, _BLAKE3_BLOCK_LEN, 4)]
+
+
+def _blake3_chunk_output(chunk, chunk_counter):
+    cv = list(_BLAKE3_IV)
+    block_count = max(1, (len(chunk) + _BLAKE3_BLOCK_LEN - 1) // _BLAKE3_BLOCK_LEN)
+    for i in range(block_count):
+        block = chunk[i * _BLAKE3_BLOCK_LEN:(i + 1) * _BLAKE3_BLOCK_LEN]
+        block_len = len(block)
+        block = block + b'\x00' * (_BLAKE3_BLOCK_LEN - block_len)
+        words = _blake3_words_from_block(block)
+        flags = 0
+        if i == 0:
+            flags |= _BLAKE3_CHUNK_START
+        if i == block_count - 1:
+            flags |= _BLAKE3_CHUNK_END
+            return (cv, words, chunk_counter, block_len, flags)
+        cv = _blake3_compress(cv, words, chunk_counter, block_len, flags)[:8]
+    return (cv, [0] * 16, chunk_counter, 0,
+            _BLAKE3_CHUNK_START | _BLAKE3_CHUNK_END)
+
+
+def _blake3_parent_output(left_cv, right_cv):
+    return (list(_BLAKE3_IV), list(left_cv) + list(right_cv), 0,
+            _BLAKE3_BLOCK_LEN, _BLAKE3_PARENT)
+
+
+def _blake3_output_cv(output):
+    cv, words, counter, block_len, flags = output
+    return _blake3_compress(cv, words, counter, block_len, flags)[:8]
+
+
+def _blake3_root_bytes(output, out_len):
+    cv, words, counter, block_len, flags = output
+    out = bytearray()
+    out_counter = 0
+    while len(out) < out_len:
+        words16 = _blake3_compress(cv, words, out_counter, block_len,
+                                   flags | _BLAKE3_ROOT)
+        for w in words16:
+            out += w.to_bytes(4, 'little')
+        out_counter += 1
+    return bytes(out[:out_len])
+
+
+def _blake3_largest_power_of_two_leq(n):
+    p = 1
+    while (p << 1) <= n:
+        p <<= 1
+    return p
+
+
+def _blake3_left_len(content_len):
+    full_chunks = (content_len - 1) // _BLAKE3_CHUNK_LEN
+    return _blake3_largest_power_of_two_leq(full_chunks) * _BLAKE3_CHUNK_LEN
+
+
+def _blake3_hash_recurse(data, chunk_counter):
+    if len(data) <= _BLAKE3_CHUNK_LEN:
+        return _blake3_chunk_output(data, chunk_counter)
+    left_len = _blake3_left_len(len(data))
+    left = _blake3_hash_recurse(data[:left_len], chunk_counter)
+    right = _blake3_hash_recurse(
+        data[left_len:], chunk_counter + (left_len // _BLAKE3_CHUNK_LEN))
+    return _blake3_parent_output(_blake3_output_cv(left), _blake3_output_cv(right))
+
+
+def blake3_hash(data, out_len=32):
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    output = _blake3_hash_recurse(data, 0)
+    return _blake3_root_bytes(output, out_len)
+
+
 def hash_str32(text):
-    h = 2166136261
-    for char in text:
-        h ^= ord(char)
-        h = (h * 16777619) & 0xFFFFFFFF
-    return h
+    # rc.8 live seed derivation: first 4 digest bytes, big-endian unsigned.
+    return int.from_bytes(blake3_hash(text)[:4], 'big')
 
 
 def lcg32(value):
@@ -337,11 +470,78 @@ def lcg64(value):
 
 
 def hash_str64(text):
-    h = FNV64_OFFSET
+    # rc.8 live seed derivation: first 8 digest bytes, big-endian unsigned.
+    return int.from_bytes(blake3_hash(text)[:8], 'big')
+
+
+# Frozen FNV-1a primitives for legacy decrypt paths (rc.4-hidden, rc.3, rc.2).
+# These reproduce the pre-rc.8 hash behaviour so legacy ciphertext stays
+# decryptable after the live pipeline moves to BLAKE3. They must never change.
+LEGACY_FNV64_OFFSET = FNV64_OFFSET
+LEGACY_FNV64_PRIME = FNV64_PRIME
+
+
+def _legacy_fnv_hash64(text):
+    h = LEGACY_FNV64_OFFSET
     for byte in text.encode('utf-8'):
         h ^= byte
-        h = (h * FNV64_PRIME) & U64_MASK
+        h = (h * LEGACY_FNV64_PRIME) & U64_MASK
     return h
+
+
+def _legacy_fnv_hash32(text):
+    h = 2166136261
+    for char in text:
+        h ^= ord(char)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def _legacy_derive_mac_subkey(key_str):
+    # Frozen FNV copy of derive_mac_subkey for the rc.4-hidden decrypt path.
+    return str(_legacy_fnv_hash64(key_str + '\x01enigmak-mac'))
+
+
+def _legacy_compute_pad_length(plaintext, key_str, padding_seed, version_char):
+    # Frozen FNV copy of compute_pad_length for the rc.4-hidden decrypt path.
+    pad_len = _legacy_fnv_hash64(
+        f'{key_str}|{plaintext}|{padding_seed}|{version_char}|padlen') % MAX_PAD_LEN
+    if plaintext == '' and pad_len == 0:
+        pad_len = 1
+    return pad_len
+
+
+def _legacy_keyed_zero_width_order(key_str):
+    # Frozen FNV copy of keyed_zero_width_order for the rc.4-hidden decrypt path.
+    symbols = ZERO_WIDTH_SYMBOLS[:]
+    state = _legacy_fnv_hash64(f'{key_str}|zwperm')
+    for i in range(len(symbols) - 1, 0, -1):
+        state = lcg64(state ^ i)
+        j = state % (i + 1)
+        symbols[i], symbols[j] = symbols[j], symbols[i]
+    return symbols
+
+
+def _legacy_decode_hidden_carrier_stream(carrier_stream, key_str):
+    # Frozen FNV copy of decode_hidden_carrier_stream for the rc.4-hidden path.
+    if len(carrier_stream) % HIDDEN_CHUNK_LEN != 0:
+        raise ValueError(
+            f'Hidden metadata carrier count must be a multiple of {HIDDEN_CHUNK_LEN}')
+    order = _legacy_keyed_zero_width_order(key_str)
+    reverse = {symbol: index for index, symbol in enumerate(order)}
+    out = []
+    for i in range(0, len(carrier_stream), HIDDEN_CHUNK_LEN):
+        value = 0
+        for char in carrier_stream[i:i + HIDDEN_CHUNK_LEN]:
+            if char not in reverse:
+                raise ValueError(
+                    'Unknown hidden metadata carrier symbol detected')
+            value = value * 4 + reverse[char]
+        if value >= N:
+            raise ValueError(
+                f'Hidden metadata digit block decodes outside ALPHA: {value}')
+        out.append(ALPHA[value])
+    return ''.join(out)
 
 
 def derive_mac_subkey(key_str):
@@ -425,11 +625,11 @@ def shuffle_indices_with_seed(size, seed):
 
 
 def rotor_state_hash(rotors):
-    h = FNV64_OFFSET
-    for index, rotor in enumerate(rotors):
-        h ^= (rotor['pos'] * 73 + index + 1) & U64_MASK
-        h = (h * FNV64_PRIME) & U64_MASK
-    return h
+    # rc.8: BLAKE3-derived from a canonical rotor serialization. The legacy
+    # rc.3/rc.4 paths keep their own frozen FNV copies of this function.
+    parts = [str(rotor['pos'] * 73 + index + 1)
+             for index, rotor in enumerate(rotors)]
+    return hash_str64('rotor-state|' + '|'.join(parts))
 
 
 def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
@@ -1077,7 +1277,7 @@ def decode_legacy_length_field(field):
 
 
 def compute_legacy_alphabet_checksum(checksum_input, key_str, version_char=RC4_VERSION_CHAR):
-    state = hash_str64(f'{checksum_input}|{key_str}|{version_char}|chk64')
+    state = _legacy_fnv_hash64(f'{checksum_input}|{key_str}|{version_char}|chk64')
     out = []
     for index in range(CHECKSUM_LEN):
         state = lcg64(state ^ index)
@@ -1103,7 +1303,7 @@ def compute_padding_seed(plaintext, key_str, length_field=None, version_char=RC4
 def compute_rc3_checksum(plaintext, key_str, length_field=None):
     field = length_field if length_field is not None else encode_legacy_length_field(
         len(plaintext))
-    state = hash_str64(f'{field}|{plaintext}|{key_str}|chk64')
+    state = _legacy_fnv_hash64(f'{field}|{plaintext}|{key_str}|chk64')
     out = []
     for index in range(CHECKSUM_LEN):
         state = lcg64(state ^ index)
@@ -1112,7 +1312,7 @@ def compute_rc3_checksum(plaintext, key_str, length_field=None):
 
 
 def legacy_compute_checksum(plaintext, key_str):
-    state = hash_str64(f'{plaintext}|{key_str}|chk64')
+    state = _legacy_fnv_hash64(f'{plaintext}|{key_str}|chk64')
     out = []
     for index in range(CHECKSUM_LEN):
         state = lcg64(state ^ index)
@@ -1121,7 +1321,7 @@ def legacy_compute_checksum(plaintext, key_str):
 
 
 def legacy_checksum_pos(key_str, total_len):
-    return hash_str32(f'{key_str}chkpos') % max(1, total_len - CHECKSUM_LEN)
+    return _legacy_fnv_hash32(f'{key_str}chkpos') % max(1, total_len - CHECKSUM_LEN)
 
 
 def compute_pad_length(plaintext, key_str, padding_seed, version_char):
@@ -1153,12 +1353,12 @@ def compute_legacy_padding_seed(plaintext, key_str, length_field=None, version_c
 
 
 def generate_legacy_padding(plaintext, key_str, padding_seed, version_char, pad_len=None):
-    target_len = compute_pad_length(
+    target_len = _legacy_compute_pad_length(
         plaintext, key_str, padding_seed, version_char) if pad_len is None else pad_len
     if target_len == 0:
         return ''
     out = []
-    state = hash_str64(
+    state = _legacy_fnv_hash64(
         f'{key_str}|{plaintext}|{padding_seed}|{version_char}|padfill')
     for index in range(target_len):
         state = lcg64(state ^ index)
@@ -1167,7 +1367,7 @@ def generate_legacy_padding(plaintext, key_str, padding_seed, version_char, pad_
 
 
 def compute_rc3_pad_length(plaintext, key_str):
-    return hash_str64(f'{key_str}|{plaintext}|padlen') % MAX_PAD_LEN
+    return _legacy_fnv_hash64(f'{key_str}|{plaintext}|padlen') % MAX_PAD_LEN
 
 
 def generate_rc3_padding(plaintext, key_str, pad_len=None):
@@ -1176,7 +1376,7 @@ def generate_rc3_padding(plaintext, key_str, pad_len=None):
     if target_len == 0:
         return ''
     out = []
-    state = hash_str64(f'{key_str}|{plaintext}|padfill')
+    state = _legacy_fnv_hash64(f'{key_str}|{plaintext}|padfill')
     for index in range(target_len):
         state = lcg64(state ^ index)
         out.append(LEGACY_ALPHA[state % LEGACY_N])
@@ -2535,7 +2735,7 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
             }, visible_fields['plaintext'], key['key_str'], rc4_state['km'], rc4_state)
 
         try:
-            hidden_cipher = decode_hidden_carrier_stream(
+            hidden_cipher = _legacy_decode_hidden_carrier_stream(
                 extracted['carrier_stream'], key['key_str'])
         except ValueError:
             return _generic_decrypt_failure({
@@ -2555,10 +2755,10 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
         checksum = hidden_payload[1:]
         version_ok = version == RC4_VERSION_CHAR
         checksum_ok = version_ok and checksum == compute_legacy_alphabet_checksum(
-            visible_text, derive_mac_subkey(key['key_str']), version)
+            visible_text, _legacy_derive_mac_subkey(key['key_str']), version)
         padding_seed = compute_legacy_padding_seed(
             visible_fields['plaintext'], key['key_str'], visible_fields['length_field'], version) if version_ok else ''
-        expected_pad_len = compute_pad_length(
+        expected_pad_len = _legacy_compute_pad_length(
             visible_fields['plaintext'], key['key_str'], padding_seed, version) if version_ok else 0
         expected_padding = generate_legacy_padding(
             visible_fields['plaintext'], key['key_str'], padding_seed, version, expected_pad_len) if version_ok else ''
@@ -3004,7 +3204,7 @@ def _prompt_materialize():
 
 
 def cmd_interactive():
-    print('ENIGMAK v3.0.0-rc.7 Interactive Mode')
+    print('ENIGMAK v3.0.0-rc.8 Interactive Mode')
     print('======================================')
     print('Commands: encrypt, decrypt, keygen, ioc, keystrength, quit')
     print()
@@ -3075,7 +3275,7 @@ def main(argv=None):
         return
 
     parser = FriendlyArgumentParser(
-        description='ENIGMAK v3.0.0-rc.7 - 162-symbol rotor cipher',
+        description='ENIGMAK v3.0.0-rc.8 - 162-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )

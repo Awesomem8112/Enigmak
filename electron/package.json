@@ -1,7 +1,7 @@
 {
   "name": "enigmak",
-  "version": "3.0.0-rc.6",
-  "description": "ENIGMAK v3.0.0-rc.6 - offline rotor cipher desktop application",
+  "version": "3.0.0-rc.8",
+  "description": "ENIGMAK v3.0.0-rc.8 - offline rotor cipher desktop application",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

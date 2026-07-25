@@ -1,9 +1,9 @@
-# ENIGMAK v3.0.0-rc.7 Formal Specification
+# ENIGMAK v3.0.0-rc.8 Formal Specification
 
 ## 1. Overview
 
 ENIGMAK is a symmetric, stateful, character-by-character
-substitution-permutation rotor cipher. Release candidate `v3.0.0-rc.7` emits new
+substitution-permutation rotor cipher. Release candidate `v3.0.0-rc.8` emits new
 ciphertext with API format label **`rc.6-stream`** and hidden metadata version
 character **`5`**. This current stream format combines:
 
@@ -137,6 +137,20 @@ Current-path derivation uses 64-bit state for:
 
 Legacy decrypt paths retain their historical 32-bit or 95-symbol rules where
 required for compatibility.
+
+As of `v3.0.0-rc.8`, every seed that previously used the FNV-1a string hash is
+now produced by an embedded, zero-dependency BLAKE3 hash. `hash_str64` returns
+the first 8 bytes of the 32-byte BLAKE3 digest and `hash_str32` returns the
+first 4 bytes, both as big-endian unsigned integers; the BLAKE3 `hash` mode is
+validated against the official BLAKE3 test vectors. This covers rotor-state
+hashing, the MAC subkey, the stream schedule seed, carrier wildcard derivation,
+the hidden-carrier digit permutation and scatter seeds, and the checksum and
+padding seeds. The arithmetic `keySum` and the permutation seeds derived from
+it (step mask, diffusion, per-layout, whitening) are unchanged. The rc.4-hidden,
+rc.3, rc.2, and `v2.0.0-legacy` decrypt paths keep frozen FNV-1a copies so older
+ciphertext stays decryptable. Because the wire format is unchanged, rc.8
+ciphertext differs from rc.7 for the same key only because the seed values
+differ.
 
 Current keyed shuffles use rejection-sampling Fisher-Yates over 64-bit random
 state so Python and JavaScript avoid modulo bias and produce identical

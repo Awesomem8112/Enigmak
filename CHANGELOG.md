@@ -1,3 +1,45 @@
+## v3.0.0-rc.8 - Release Candidate 8
+
+### Highlights
+- **BLAKE3 seed derivation** - all live seed derivation now runs on a
+  zero-dependency, from-scratch BLAKE3 implementation instead of FNV-1a.
+  `hash_str64` / `hash_str32` (and JavaScript `hashStr64` / `hashStr32`) now
+  return the first 8 and 4 bytes of the 32-byte BLAKE3 digest as big-endian
+  unsigned integers, identically across all four implementations. This covers
+  the MAC subkey, rotor state hashing, the rc.6 stream schedule seed, carrier
+  wildcard derivation, checksum and padding seeds, and zero-width/materialized
+  metadata ordering. FNV-1a is a non-cryptographic hash with known collisions
+  and no preimage resistance; BLAKE3 is a modern cryptographic hash with no
+  known weaknesses.
+- **Validated against official vectors** - the embedded BLAKE3 reproduces the
+  official BLAKE3 `test_vectors.json` digests exactly for empty, short, and
+  multi-chunk inputs, validated in Python, JavaScript, browser HTML, and
+  Electron independently. Matching the published vectors confirms byte-for-byte
+  compatibility with the reference algorithm.
+- **Frozen legacy FNV** - the rc.4-hidden, rc.3, and rc.2 decrypt paths now use
+  dedicated `_legacy_fnv_hash64` / `_legacy_fnv_hash32` copies of the original
+  FNV-1a logic, so historical ciphertext stays decryptable after the live
+  pipeline moved to BLAKE3.
+
+### Compatibility
+- The wire format, hidden metadata version character `5`, packaging, stream
+  schedule shape, checksum scatter, and materialized metadata toggle are all
+  unchanged. Only the internal seed derivation differs, so the active API
+  format label remains `rc.6-stream`.
+- For the same key, rc.8 builds produce different `rc.6-stream` ciphertext than
+  rc.7 and earlier because every derived seed changes. rc.7-produced ciphertext
+  fails closed (generic decryption failure) under rc.8 with the same key,
+  consistent with the rc.6 -> rc.7 precedent. Matching software versions are
+  required to interoperate on the live pipeline.
+- rc.4-hidden, rc.3, rc.2, and `v2.0.0-legacy` ciphertext continue to decrypt
+  exactly as before, through their frozen FNV-1a paths.
+- Python, JavaScript, browser, and Electron interoperate for rc.8
+  `rc.6-stream` ciphertext in both zero-width and materialized modes.
+- No new runtime dependencies were added; BLAKE3 is implemented in plain Python
+  and plain JavaScript.
+
+---
+
 ## v3.0.0-rc.7 - Release Candidate 7
 
 ### Highlights
