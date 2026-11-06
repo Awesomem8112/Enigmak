@@ -86,6 +86,8 @@ const menuTemplate = [
           await mainWindow.webContents.executeJavaScript(
             `document.getElementById('input').value='';
              document.getElementById('output').value='';
+             document.getElementById('faux-input').value='';
+             invalidateDualMessage();
              onInput();`
           );
         },
@@ -108,6 +110,27 @@ const menuTemplate = [
     label: 'Security',
     submenu: [
       {
+        label: 'Copy intended recipient key',
+        click: async () => {
+          if (!mainWindow) return;
+          const key = await mainWindow.webContents.executeJavaScript(
+            'lastDualBundle?.real?.key || ""'
+          );
+          if (key) clipboard.writeText(key);
+        },
+      },
+      {
+        label: 'Copy faux key',
+        click: async () => {
+          if (!mainWindow) return;
+          const key = await mainWindow.webContents.executeJavaScript(
+            'lastDualBundle?.faux?.key || ""'
+          );
+          if (key) clipboard.writeText(key);
+        },
+      },
+      { type: 'separator' },
+      {
         label: 'Clear clipboard',
         click: () => { clipboard.writeText(''); },
       },
@@ -120,7 +143,9 @@ const menuTemplate = [
           await mainWindow.webContents.executeJavaScript(
             `document.getElementById('input').value='';
              document.getElementById('output').value='';
+             document.getElementById('faux-input').value='';
              document.getElementById('key-import').value='';
+             invalidateDualMessage();
              onInput();`
           );
         },
@@ -136,14 +161,14 @@ const menuTemplate = [
           dialog.showMessageBox(mainWindow, {
             type: 'info',
             title: 'About ENIGMAK',
-            message: 'ENIGMAK v3.0.0-rc.8',
+            message: 'ENIGMAK v3.0.0-rc.9',
             detail:
               'Custom rotor cipher machine\n' +
-              '161-symbol alphabet - 1-18 rotors - Steckerbrett\n' +
+              '162-symbol alphabet - 1-18 rotors - Steckerbrett\n' +
               'Irregular stepping - diffusion - key-derived layouts\n' +
               '10-999 effective rounds - position whitening\n' +
-              'Hidden metadata format - zero-width carrier encoding\n\n' +
-              'Maximum profile keyspace: ~1.909 x 10^228 (~758 bits)\n' +
+              'Hidden metadata and prefix-free dual-message formats\n\n' +
+              'Generated key families meet a 256-bit minimum\n' +
               'Runs fully offline - no network requests.',
           });
         },
@@ -152,22 +177,28 @@ const menuTemplate = [
   },
 ];
 
-app.whenReady().then(() => {
-  createWindow();
-  const menu = Menu.buildFromTemplate(menuTemplate);
-  Menu.setApplicationMenu(menu);
+function startApplication() {
+  app.whenReady().then(() => {
+    createWindow();
+    const menu = Menu.buildFromTemplate(menuTemplate);
+    Menu.setApplicationMenu(menu);
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
   });
-});
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
 
-// Block all external navigation
-app.on('web-contents-created', (_, contents) => {
-  contents.on('will-navigate', (e) => e.preventDefault());
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-});
+  // Block all external navigation
+  app.on('web-contents-created', (_, contents) => {
+    contents.on('will-navigate', (e) => e.preventDefault());
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  });
+}
+
+if (require.main === module) startApplication();
+
+module.exports = { createWindow, menuTemplate, startApplication };

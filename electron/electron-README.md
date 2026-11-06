@@ -1,6 +1,6 @@
 # ENIGMAK Desktop App
 
-This folder contains the Electron wrapper for the ENIGMAK `v3.0.0-rc.8`
+This folder contains the Electron wrapper for the ENIGMAK `v3.0.0-rc.9`
 machine.
 
 ## Requirements
@@ -18,7 +18,8 @@ npm start
 This launches ENIGMAK as a native desktop window with the same `rc.6-stream`
 runtime bundle used by the root browser build. The default carrier mode uses
 zero-width metadata; the optional materialized metadata checkbox must match on
-send and receive.
+send and receive. The encrypt view can also generate one prefix-free dual
+ciphertext with independently generated intended-recipient and faux keys.
 
 ## Build Outputs
 
@@ -45,6 +46,7 @@ npm run build-mac
 - File menu actions for saving ciphertext and loading text files
 - standard edit actions
 - clipboard clearing shortcuts
+- Security menu items to copy the intended-recipient or faux dual key
 - a native About dialog
 - native window controls
 - blocked external navigation

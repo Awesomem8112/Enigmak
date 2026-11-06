@@ -31,6 +31,13 @@ public scrutiny.
   not implemented. A hand-written primitive carries more implementation-bug
   risk than a widely used library binding; the test-vector validation is the
   mitigation for that risk.
+- **From-scratch ChaCha20 port.** As of `v3.0.0-rc.9`, live pseudorandom
+  generation uses an embedded, from-scratch RFC 8439 ChaCha20 keystream
+  implementation, not a binding to an audited library. LCG64/LCG32 no longer
+  drive any live-pipeline randomness. The block function is validated against
+  the official RFC 8439 Section 2.3.2 test vector in all four implementations.
+  This confirms byte-for-byte agreement with the reference algorithm for the
+  block function but is not a substitute for an independent audit of this port.
 - **162-symbol alphabet with passthrough.** The active cipher operates on a
   162-symbol `ALPHA` (legacy printable ASCII, European extended characters, and
   newline). Characters outside `ALPHA` pass through unchanged on encrypt and do
@@ -45,11 +52,13 @@ public scrutiny.
   checksum, and keyed padding, but it is not a substitute for researched
   authenticated encryption.
 - **Zero-width metadata transport.** New `rc.6-stream` ciphertext depends on
-  44 invisible metadata carriers. Use exact copy/export paths; terminal
-  highlighting can omit those characters. Python interactive encryption copies
-  exact output to the system clipboard to avoid this failure mode.
+  key-derived invisible metadata carriers (`logical_len * 4`, uniform over
+  `4..(N-1)*4` at `N=162`). Legacy ciphertext with exactly 44 carriers still
+  decrypts. Use exact copy/export paths; terminal highlighting can omit those
+  characters. Python interactive encryption copies exact output to the system
+  clipboard to avoid this failure mode. Some keys materially increase stream size.
 - **Materialized metadata transport.** The optional materialized mode emits the
-  same 44 carrier events as visible `ALPHA` characters for carrier-hostile
+  same key-derived carrier events as visible `ALPHA` characters for carrier-hostile
   databases and APIs. Sender and receiver must use the same setting; mismatches
   fail closed.
 - **Stream schedule integrity.** `rc.6-stream` interleaves payload symbols,
@@ -85,8 +94,9 @@ public scrutiny.
 - Browser/Electron stale-output exposure was fixed in `v3.0.0-rc.5` by clearing
   decrypt outputs before attempting decrypt work and by hard-gating final output
   writes on successful verification.
-- Failure-path corruption was fixed at exactly 4096 characters in `v3.0.0-rc.5`
-  so the amount of local overwrite work is independent of message length.
+- Failure-path work was fixed at exactly 4096 characters in `v3.0.0-rc.5`
+  so the amount of local failure work is independent of message length.
+  Immutable Python/JavaScript strings still cannot be guaranteed overwritten.
 - `v3.0.0-rc.6` introduced `rc.6-stream` with scattered encrypted checksum
   characters, phantom advancement at carrier positions, a 161-symbol alphabet,
   `K6:` base36 key encoding, and a `ROUND_MINIMUM` floor of 10 derived rounds.
@@ -100,17 +110,31 @@ public scrutiny.
   rc.2, and `v2.0.0-legacy` decrypt paths retain frozen FNV-1a copies so older
   ciphertext stays decryptable. The wire format is unchanged, so rc.8 builds
   produce different `rc.6-stream` ciphertext than rc.7 for the same key.
+- `v3.0.0-rc.9` replaced LCG64/LCG32 stepping across the live cipher pipeline
+  with RFC 8439 ChaCha20 keystream keyed via BLAKE3-derived 32-byte stream keys.
+  The rc.4-hidden, rc.3, and rc.2 decrypt paths retain frozen LCG copies. The
+  wire format is unchanged, so rc.9 builds produce different `rc.6-stream`
+  ciphertext than rc.8 for the same key. Additional rc.9 work adds uniformly
+  key-seeded variable metadata length, default five-symbol nonces, a
+  prefix-free dual-message envelope (`rc.9-dual-v1`), and retained deprecated
+  Option A two-ciphertext decoy bundles.
 
 ## Recommended Usage
 
 - Generate a fresh key for every session.
-- Use the nonce for every message.
+- Use the nonce for every message (default keygen uses five alphabet symbols when a nonce is included).
 - Never transmit keys through the same channel as ciphertext.
 - Verify the key fingerprint verbally before use.
 - Prefer `rc.6-stream` for all new messages.
 - Preserve zero-width metadata when copying or exporting ciphertext.
 - Use materialized metadata only when the transport cannot preserve zero-width
   carriers, and tell the receiver to use the same setting.
+- Dual messages emit one ciphertext and two independently generated keys. Either
+  key opens its own verified plaintext. This is not formal plausible
+  deniability: observers can still distinguish dual envelopes by length and
+  statistics, and the wrapper is not AEAD.
+- Deprecated Option A decoy bundles still produce two independent ciphertexts.
+  They do not implement same-blob dual decryption.
 - Prefer clipboard or interactive mode for Python CLI decryption of real
   ciphertext, and rely on the interactive encryption clipboard copy rather than
   manually highlighting terminal output.

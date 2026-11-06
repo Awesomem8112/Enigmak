@@ -1,3 +1,67 @@
+## v3.0.0-rc.9 - Release Candidate 9
+
+### Highlights
+- **ChaCha20 CSPRNG** - all live pseudorandom generation (permutation shuffles,
+  carrier wildcards, stream scheduling, checksum and padding expansion,
+  zero-width and materialized metadata ordering, and whitening keystream) now
+  runs on a zero-dependency, from-scratch RFC 8439 ChaCha20 keystream instead
+  of LCG64/LCG32 stepping. LCG outputs are trivially predictable from partial
+  exposure; ChaCha20 provides a modern keystream with no known practical
+  state-recovery attack at ENIGMAK's output volume.
+- **Validated against official vectors** - the embedded ChaCha20 block function
+  reproduces the RFC 8439 Section 2.3.2 test vector exactly, validated in
+  Python, JavaScript, browser HTML, and Electron independently.
+- **Schedule rejection sampling** - `build_stream_schedule` now uses the same
+  uniform rejection-sampling draw as `shuffle_indices_with_seed`, removing
+  modulo bias from stream event ordering.
+- **Frozen legacy LCG** - rc.4-hidden, rc.3, and rc.2 decrypt paths use
+  dedicated `_legacy_lcg64` / `_legacy_lcg32` copies of the original multiply-add
+  stepping logic, so historical ciphertext stays decryptable after the live
+  pipeline moved to ChaCha20.
+- **Variable hidden metadata** - new `rc.6-stream` encryption derives hidden
+  metadata logical length uniformly from the key seed over `1 .. N-1` alphabet
+  characters (`1 + hash(key + "|meta-len|") % (N-1)`). Carrier count is
+  `logical_len * 4`. Tiered encode/verify matches the encoded length; scattered
+  checksum is always required. Legacy ciphertext with exactly **44** carriers
+  (11 logical chars) still decrypts through a frozen branch.
+- **Default 5-symbol nonce** - `generate_key` / UI keygen now sample
+  `NONCE_LEN = 5` alphabet symbols when a nonce is included. Parsing still
+  accepts legacy 3-char (and any even-length) nonce sections.
+- **Prefix-free dual messages** - `encrypt_dual_message` / `encryptDualMessage`
+  emit one unpadded base64url ciphertext and two independently generated `K6:`
+  keys. Either key returns its own fully verified plaintext (`rc.9-dual-v1`).
+  There is no public magic string in the ciphertext literal. CLI `encrypt-dual`
+  and the browser/Electron "Generate dual ciphertext" workflow are the primary
+  surfaces. `--faux-only` / `--faux-out` must not print the intended key.
+- **Deprecated Option A decoy bundles** - `encrypt_decoy_bundle` /
+  `encryptDecoyBundle` and CLI `encrypt-decoy` remain available as two
+  independent ciphertexts. They are not same-blob dual decryption.
+- **Correctness audit** - parser, Unicode, BigInt, modulo, primitive, fallback,
+  and documentation defects from `CORRECTNESS_AUDIT.md` are fixed in this
+  candidate. Fixtures are pinned; `python scripts/verify.py` is the repository
+  verification command.
+
+### Compatibility
+- The wire format, hidden metadata version character `5`, packaging, stream
+  schedule shape, checksum scatter, and materialized metadata toggle are all
+  unchanged. Only the internal pseudorandom generation differs, so the active
+  API format label remains `rc.6-stream`.
+- For the same key, rc.9 builds produce different `rc.6-stream` ciphertext than
+  rc.8 and earlier because every permutation, wildcard, schedule position, and
+  whitening step now derives from ChaCha20. rc.8-produced ciphertext fails closed
+  (generic decryption failure) under rc.9 with the same key, consistent with
+  the rc.7 -> rc.8 and rc.8 -> rc.9 precedent. Matching software versions are
+  required to interoperate on the live pipeline.
+- rc.4-hidden, rc.3, rc.2, and `v2.0.0-legacy` ciphertext continue to decrypt
+  exactly as before, through their frozen FNV-1a and frozen LCG legacy paths.
+- Python, JavaScript, browser, and Electron interoperate for rc.9
+  `rc.6-stream` ciphertext in both zero-width and materialized modes, and for
+  prefix-free `rc.9-dual-v1` envelopes.
+- No new runtime dependencies were added; ChaCha20 is implemented in plain
+  Python and plain JavaScript.
+
+---
+
 ## v3.0.0-rc.8 - Release Candidate 8
 
 ### Highlights

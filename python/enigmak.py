@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ENIGMAK v3.0.0-rc.8 - Command-line cipher machine
-161-symbol multi-round substitution-permutation rotor cipher
+ENIGMAK v3.0.0-rc.9 - Command-line cipher machine
+162-symbol multi-round substitution-permutation rotor cipher
 
 Usage:
     python enigmak.py encrypt "YOUR MESSAGE" "KEY STRING"
@@ -18,9 +18,9 @@ Usage:
     python enigmak.py keystrength "KEY STRING"
     python enigmak.py interactive
 
-    --materialize (encrypt/decrypt only): emit metadata as 44 visible carrier
-    characters instead of zero-width carriers. Use when terminals or copy/paste
-    paths strip invisible metadata. Interactive mode prompts for this option.
+    --materialize (encrypt/decrypt only): emit metadata as key-derived visible
+    carrier characters instead of zero-width carriers. Use when terminals or
+    copy/paste paths strip invisible metadata. Interactive mode prompts for it.
 
 See README.md and SPECIFICATION.md for full details.
 """
@@ -32,6 +32,10 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 import argparse
+import base64
+import binascii
+import hmac
+import json
 import math
 import secrets
 
@@ -61,14 +65,30 @@ RC6_VERSION_CHAR = '5'
 HIDDEN_METADATA_LEN = 1 + CHECKSUM_LEN
 HIDDEN_CHUNK_LEN = 4
 HIDDEN_SYMBOL_COUNT = HIDDEN_METADATA_LEN * HIDDEN_CHUNK_LEN
+LEGACY_HIDDEN_SYMBOL_COUNT = HIDDEN_SYMBOL_COUNT
+NONCE_LEN = 5
+METADATA_LEN_DOMAIN = '|meta-len|'
+METADATA_FILLER_DOMAIN = '|meta-fill|'
 GENERIC_DECRYPT_ERROR = 'Decryption failed.'
 MAX_CORRUPT_LEN = 4096
 MIN_GENERATED_KEY_BITS = 256
+MIN_GENERATED_KEYSPACE = 1 << MIN_GENERATED_KEY_BITS
 KEY_V6_PREFIX = 'K6:'
 K6_ENCRYPT_REQUIRED_ERROR = 'Encryption requires a K6: key. Legacy keys remain decrypt-only.'
 BASE36_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 CARRIER_WILDCARD_DOMAIN = '|carrier-wildcards|'
 STREAM_SCHEDULE_DOMAIN = '|stream-schedule|'
+DUAL_WRAP_DOMAIN = '|dual-slot-wrap|'
+DUAL_FILLER_DOMAIN = '|dual-slot-fill|'
+DUAL_INTERNAL_MAGIC = b'\xD9\x01\xA7\x5C'
+DUAL_NONCE_LEN = 16
+DUAL_CONTROL_LEN = len(DUAL_INTERNAL_MAGIC) + 1 + 4
+DUAL_MIN_FILLER_LEN = 32
+DUAL_MAX_SLOT_BYTES = 1024 * 1024
+DUAL_MAX_RAW_BYTES = DUAL_NONCE_LEN + (2 * DUAL_MAX_SLOT_BYTES)
+DUAL_MAX_ENCODED_CHARS = (4 * DUAL_MAX_RAW_BYTES + 2) // 3
+DUAL_FLAG_MATERIALIZE = 0x01
+DUAL_FORMAT_LABEL = 'rc.9-dual-v1'
 U64_MASK = (1 << 64) - 1
 FNV64_OFFSET = 0xCBF29CE484222325
 FNV64_PRIME = 0x100000001B3
@@ -242,15 +262,20 @@ INV_MAPS = {
     name: {v: k for k, v in MAPS[name].items()} for name in LAYOUT_NAMES}
 
 
-def _random_unicode_scalar():
-    while True:
-        value = secrets.randbelow(0x110000)
-        if not 0xD800 <= value <= 0xDFFF:
-            return value
-
-
 def _corrupt_buffer():
-    return ''.join(chr(_random_unicode_scalar()) for _ in range(MAX_CORRUPT_LEN))
+    # Best effort only: the mutable random source is cleared, but the returned
+    # Python string is immutable and cannot be guaranteed overwritten.
+    raw = bytearray(secrets.token_bytes(MAX_CORRUPT_LEN * 4))
+    try:
+        chars = []
+        for offset in range(0, len(raw), 4):
+            value = int.from_bytes(raw[offset:offset + 4], 'little') % 0x110000
+            if 0xD800 <= value <= 0xDFFF:
+                value = 0xE000 + ((value - 0xD800) % 0x1900)
+            chars.append(chr(value))
+        return ''.join(chars)
+    finally:
+        raw[:] = b'\x00' * len(raw)
 
 
 def _random_permutation():
@@ -286,13 +311,9 @@ def _corrupt_cipher_state(cipher_state):
 
 
 def _generic_decrypt_failure(result, partial_text='', key_str=None, key_material=None, cipher_state=None):
-    partial_plaintext = partial_text if partial_text is not None else result.get(
-        'plaintext', '')
-    corrupt = _corrupt_buffer()
-    partial_plaintext = corrupt
-    corrupt = ''
-    if key_str is not None:
-        key_str = _corrupt_buffer()
+    # Fixed-size work avoids message-length-dependent failure behavior. It is
+    # not secure erasure: Python strings held by callers or the GC are immutable.
+    _corrupt_buffer()
     _corrupt_key_material(key_material)
     _corrupt_cipher_state(cipher_state)
     failed = dict(result)
@@ -456,17 +477,150 @@ def blake3_hash(data, out_len=32):
     return _blake3_root_bytes(output, out_len)
 
 
+def _blake3_validate_official_vectors():
+    vectors = (
+        (b'', 'af1349b9f5f9a1a6a0404dea36dcc949'
+              '9bcb25c9adc112b7cc9a93cae41f3262'),
+        (b'abc', '6437b3ac38465133ffb63b75273a8db5'
+                 '48c558465d79db03fd359c6cd5bd9d85'),
+        (bytes([0]), '2d3adedff11b61f14c886e35afa036736'
+                     'dcd87a74d27b5c1510225d0f592e213'),
+        (bytes(index % 251 for index in range(1024)),
+         '42214739f095a406f3fc83deb889744a'
+         'c00df831c10daa55189b5d121c855af7'),
+        (bytes(index % 251 for index in range(2048)),
+         'e776b6028c7cd22a4d0ba182a8bf622'
+         '05d2ef576467e838ed6f2529b85fba24a'),
+    )
+    for data, expected_hex in vectors:
+        if blake3_hash(data, 32).hex() != expected_hex:
+            raise RuntimeError('BLAKE3 official hash vector mismatch')
+
+
+# ---------------------------------------------------------------------------
+# ChaCha20 (RFC 8439 IETF variant) - zero-dependency from-scratch port.
+# Used for all live rc.9 pseudorandom generation. Validated against the
+# official RFC 8439 Section 2.3.2 block function test vector.
+# ---------------------------------------------------------------------------
+_CHACHA20_CONSTANTS = (0x61707865, 0x3320646e, 0x79622d32, 0x6b206574)
+_CHACHA20_U32 = 0xFFFFFFFF
+_CHACHA20_RFC_TEST_VECTOR = bytes.fromhex(
+    '10f1e7e4d13b5915500fdd1fa32071c4'
+    'c7d1f4c733c068030422aa9ac3d46c4e'
+    'd2826446079faa0914c2d705d98b02a2'
+    'b5129cd1de164eb9cbd083e8a2503c4e')
+
+
+def _rotl32(value, bits):
+    return ((value << bits) | (value >> (32 - bits))) & _CHACHA20_U32
+
+
+def chacha20_block(key_bytes, counter, nonce_bytes):
+  # key_bytes: 32 bytes, nonce_bytes: 12 bytes, counter: unsigned 32-bit int
+    key_words = [int.from_bytes(key_bytes[i:i + 4], 'little')
+                 for i in range(0, 32, 4)]
+    nonce_words = [int.from_bytes(nonce_bytes[i:i + 4], 'little')
+                   for i in range(0, 12, 4)]
+    state = list(_CHACHA20_CONSTANTS) + key_words + \
+        [counter & _CHACHA20_U32] + nonce_words
+    working = state[:]
+
+    def qr(s, a, b, c, d):
+        s[a] = (s[a] + s[b]) & _CHACHA20_U32
+        s[d] ^= s[a]
+        s[d] = _rotl32(s[d], 16)
+        s[c] = (s[c] + s[d]) & _CHACHA20_U32
+        s[b] ^= s[c]
+        s[b] = _rotl32(s[b], 12)
+        s[a] = (s[a] + s[b]) & _CHACHA20_U32
+        s[d] ^= s[a]
+        s[d] = _rotl32(s[d], 8)
+        s[c] = (s[c] + s[d]) & _CHACHA20_U32
+        s[b] ^= s[c]
+        s[b] = _rotl32(s[b], 7)
+
+    for _ in range(10):
+        qr(working, 0, 4, 8, 12)
+        qr(working, 1, 5, 9, 13)
+        qr(working, 2, 6, 10, 14)
+        qr(working, 3, 7, 11, 15)
+        qr(working, 0, 5, 10, 15)
+        qr(working, 1, 6, 11, 12)
+        qr(working, 2, 7, 8, 13)
+        qr(working, 3, 4, 9, 14)
+
+    output_words = [(working[i] + state[i]) & _CHACHA20_U32 for i in range(16)]
+    return b''.join(w.to_bytes(4, 'little') for w in output_words)
+
+
+def _chacha20_validate_rfc_test_vector():
+    key = bytes(range(32))
+    nonce = bytes.fromhex('000000090000004a00000000')
+    block = chacha20_block(key, 1, nonce)
+    if block != _CHACHA20_RFC_TEST_VECTOR:
+        raise RuntimeError('ChaCha20 RFC 8439 Section 2.3.2 test vector mismatch')
+
+
+def _chacha20_derive_key(seed_str):
+    return blake3_hash(seed_str.encode('utf-8'), 32)
+
+
+class Chacha20Stream:
+    def __init__(self, seed_str):
+        self._key = _chacha20_derive_key(seed_str)
+        self._nonce = b'\x00' * 12
+        self._counter = 0
+        self._buffer = b''
+        self._pos = 0
+
+    def _refill(self):
+        self._buffer = chacha20_block(self._key, self._counter, self._nonce)
+        self._counter = (self._counter + 1) & _CHACHA20_U32
+        self._pos = 0
+
+    def _next_bytes(self, count):
+        out = bytearray()
+        while len(out) < count:
+            if self._pos >= len(self._buffer):
+                self._refill()
+            take = min(count - len(out), len(self._buffer) - self._pos)
+            out.extend(self._buffer[self._pos:self._pos + take])
+            self._pos += take
+        return bytes(out)
+
+    def next_u64(self):
+        return int.from_bytes(self._next_bytes(8), 'big')
+
+    def next_u32(self):
+        return int.from_bytes(self._next_bytes(4), 'big')
+
+
+def chacha20_stream_from_seed(seed_str):
+    return Chacha20Stream(seed_str)
+
+
+_blake3_validate_official_vectors()
+_chacha20_validate_rfc_test_vector()
+
+
 def hash_str32(text):
     # rc.8 live seed derivation: first 4 digest bytes, big-endian unsigned.
     return int.from_bytes(blake3_hash(text)[:4], 'big')
 
 
-def lcg32(value):
+# Frozen LCG copies for legacy decrypt paths (rc.4-hidden, rc.3, rc.2).
+# These reproduce the pre-rc.9 stepping behaviour so legacy ciphertext stays
+# decryptable after the live pipeline moves to ChaCha20. They must never change.
+LEGACY_LCG64_MULT = 6364136223846793005
+LEGACY_LCG64_INC = 1442695040888963407
+
+
+def _legacy_lcg64(value):
+    return (value * LEGACY_LCG64_MULT + LEGACY_LCG64_INC) & U64_MASK
+
+
+def _legacy_lcg32(value):
     return (value * 1664525 + 1013904223) & 0xFFFFFFFF
-
-
-def lcg64(value):
-    return (value * 6364136223846793005 + 1442695040888963407) & U64_MASK
 
 
 def hash_str64(text):
@@ -516,7 +670,7 @@ def _legacy_keyed_zero_width_order(key_str):
     symbols = ZERO_WIDTH_SYMBOLS[:]
     state = _legacy_fnv_hash64(f'{key_str}|zwperm')
     for i in range(len(symbols) - 1, 0, -1):
-        state = lcg64(state ^ i)
+        state = _legacy_lcg64(state ^ i)
         j = state % (i + 1)
         symbols[i], symbols[j] = symbols[j], symbols[i]
     return symbols
@@ -573,30 +727,120 @@ def decode_base36_index(text):
 
 
 def derive_carrier_wildcards(key_str, carrier_count):
-    seed = hash_str64(key_str + CARRIER_WILDCARD_DOMAIN)
+    stream = chacha20_stream_from_seed(key_str + CARRIER_WILDCARD_DOMAIN)
     wildcards = []
-    for i in range(carrier_count):
-        seed = lcg64(seed ^ i)
-        wildcards.append(ALPHA[seed % N])
+    for _ in range(carrier_count):
+        wildcards.append(ALPHA[stream.next_u64() % N])
     return wildcards
 
 
-def derive_schedule_seed(key_str, plaintext_len):
-    return hash_str64(key_str + STREAM_SCHEDULE_DOMAIN + str(plaintext_len))
+def derive_metadata_logical_len_legacy(key_str):
+    """Pre-audit modulo derivation retained only for ciphertext compatibility."""
+    return 1 + (hash_str64(key_str + METADATA_LEN_DOMAIN) % (N - 1))
 
 
-def build_stream_schedule(key_str, plaintext_len, payload_len):
+def derive_metadata_logical_len(key_str):
+    """Uniform deterministic draw over 1..N-1 using rejection sampling."""
+    domain = N - 1
+    limit = (1 << 64) - ((1 << 64) % domain)
+    retry = 0
+    while True:
+        suffix = '' if retry == 0 else f'|retry|{retry}'
+        value = hash_str64(key_str + METADATA_LEN_DOMAIN + suffix)
+        if value < limit:
+            return 1 + (value % domain)
+        retry += 1
+
+
+def derive_metadata_carrier_count(key_str):
+    return derive_metadata_logical_len(key_str) * HIDDEN_CHUNK_LEN
+
+
+def effective_metadata_carrier_count(key_str, observed_count):
+    if observed_count == LEGACY_HIDDEN_SYMBOL_COUNT:
+        return LEGACY_HIDDEN_SYMBOL_COUNT
+    derived = derive_metadata_carrier_count(key_str)
+    if observed_count == derived:
+        return observed_count
+    legacy_derived = derive_metadata_logical_len_legacy(
+        key_str) * HIDDEN_CHUNK_LEN
+    if observed_count == legacy_derived:
+        return observed_count
+    return None
+
+
+def resolve_metadata_params(key_str, observed_carrier_count):
+    carrier_count = effective_metadata_carrier_count(
+        key_str, observed_carrier_count)
+    if carrier_count is None:
+        return None
+    if carrier_count == LEGACY_HIDDEN_SYMBOL_COUNT:
+        logical_len = HIDDEN_METADATA_LEN
+    elif carrier_count == derive_metadata_logical_len_legacy(key_str) * HIDDEN_CHUNK_LEN:
+        logical_len = derive_metadata_logical_len_legacy(key_str)
+    else:
+        logical_len = derive_metadata_logical_len(key_str)
+    return carrier_count, logical_len
+
+
+def generate_metadata_filler(key_str, filler_len):
+    if filler_len <= 0:
+        return ''
+    out = []
+    stream = chacha20_stream_from_seed(key_str + METADATA_FILLER_DOMAIN)
+    for _ in range(filler_len):
+        out.append(ALPHA[stream.next_u64() % N])
+    return ''.join(out)
+
+
+def build_metadata_payload(version, checksum, key_str, logical_len):
+    if logical_len <= 0:
+        return ''
+    if logical_len == 1:
+        return version
+    if logical_len < HIDDEN_METADATA_LEN:
+        return version + checksum[:logical_len - 1]
+    filler_len = logical_len - HIDDEN_METADATA_LEN
+    return version + checksum + generate_metadata_filler(key_str, filler_len)
+
+
+def verify_hidden_metadata(decoded, version_char, expected_checksum, key_str, logical_len):
+    if len(decoded) != logical_len or logical_len < 1:
+        return False
+    if decoded[0] != version_char:
+        return False
+    if logical_len == 1:
+        return True
+    if logical_len < HIDDEN_METADATA_LEN:
+        return decoded[1:] == expected_checksum[:logical_len - 1]
+    if decoded[1:HIDDEN_METADATA_LEN] != expected_checksum:
+        return False
+    filler_len = logical_len - HIDDEN_METADATA_LEN
+    return decoded[HIDDEN_METADATA_LEN:] == generate_metadata_filler(
+        key_str, filler_len)
+
+
+def build_stream_schedule(key_str, plaintext_len, payload_len, carrier_count=None):
+    if carrier_count is None:
+        carrier_count = derive_metadata_carrier_count(key_str)
     remaining = {
         'payload': payload_len,
         'checksum': CHECKSUM_LEN,
-        'carrier': HIDDEN_SYMBOL_COUNT,
+        'carrier': carrier_count,
     }
-    state = derive_schedule_seed(key_str, plaintext_len)
+    stream = chacha20_stream_from_seed(
+        key_str + STREAM_SCHEDULE_DOMAIN + str(plaintext_len))
     schedule = []
     total = sum(remaining.values())
+    two64 = 1 << 64
     for index in range(total):
-        state = lcg64(state ^ index)
-        pick = state % (total - index)
+        limit = total - index
+        threshold = two64 - (two64 % limit)
+        while True:
+            draw = stream.next_u64()
+            if draw < threshold:
+                break
+        pick = draw % limit
         if pick < remaining['checksum']:
             event = 'checksum'
         elif pick < remaining['checksum'] + remaining['carrier']:
@@ -609,6 +853,23 @@ def build_stream_schedule(key_str, plaintext_len, payload_len):
 
 
 def shuffle_indices_with_seed(size, seed):
+    stream = chacha20_stream_from_seed(str(seed & U64_MASK))
+    items = list(range(size))
+    two64 = 1 << 64
+    for i in range(size - 1, 0, -1):
+        limit = i + 1
+        threshold = two64 - (two64 % limit)
+        while True:
+            draw = stream.next_u64()
+            if draw < threshold:
+                break
+        j = draw % limit
+        items[i], items[j] = items[j], items[i]
+    return items
+
+
+def _legacy_shuffle_indices_with_seed(size, seed):
+    # Frozen LCG copy of shuffle_indices_with_seed for the rc.4 decrypt path.
     items = list(range(size))
     state = seed & U64_MASK
     two64 = 1 << 64
@@ -616,7 +877,7 @@ def shuffle_indices_with_seed(size, seed):
         limit = i + 1
         threshold = two64 - (two64 % limit)
         while True:
-            state = lcg64(state)
+            state = _legacy_lcg64(state)
             if state < threshold:
                 break
         j = state % limit
@@ -632,7 +893,7 @@ def rotor_state_hash(rotors):
     return hash_str64('rotor-state|' + '|'.join(parts))
 
 
-def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
+def _compute_key_sums(steck_pairs, rotors, enabled_layouts):
     steck_sum = sum(
         min(ALPHA.index(a), ALPHA.index(b)) * N +
         max(ALPHA.index(a), ALPHA.index(b))
@@ -640,6 +901,19 @@ def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
     )
     rotor_sum = sum(rotor['pos'] for rotor in rotors)
     layout_sum = sum(LAYOUT_NAMES.index(name) for name in enabled_layouts)
+    return steck_sum, rotor_sum, layout_sum
+
+
+def compute_round_count(steck_pairs, rotors, enabled_layouts, user_rounds):
+    steck_sum, rotor_sum, layout_sum = _compute_key_sums(
+        steck_pairs, rotors, enabled_layouts)
+    return max(((steck_sum + rotor_sum + layout_sum +
+                 user_rounds) % 999) + 1, ROUND_MINIMUM)
+
+
+def compute_key_material(steck_pairs, rotors, enabled_layouts, user_rounds):
+    steck_sum, rotor_sum, layout_sum = _compute_key_sums(
+        steck_pairs, rotors, enabled_layouts)
     rounds = max(((steck_sum + rotor_sum + layout_sum +
                  user_rounds) % 999) + 1, ROUND_MINIMUM)
     key_sum = (steck_sum * 31 + rotor_sum * 17 + layout_sum * 13) & U64_MASK
@@ -718,7 +992,7 @@ def apply_layout(char, layout_name, shift, invert, layout_maps, inv_layout_maps)
         return value
     value = char
     if value in ALPHA:
-        value = ALPHA[(ALPHA.index(value) - shift + N * 100) % N]
+        value = ALPHA[(ALPHA.index(value) - shift) % N]
     return inv_layout_maps[layout_name].get(value, value)
 
 
@@ -753,6 +1027,7 @@ def create_cipher_state(steck_pairs, rotors, enabled_layouts, user_rounds, nonce
         'unused_layouts': unused_layouts,
         'rotors': apply_nonce([dict(rotor) for rotor in rotors], nonce),
         'whitening_state': km['whitening_seed'],
+        'whitening_stream': chacha20_stream_from_seed(str(km['whitening_seed'])),
         'alpha_index': 0,
     }
 
@@ -800,13 +1075,13 @@ def process_segment(text, state, decrypt=False):
                     value, name, scramble_shifts[index], False, layout_maps, inv_layout_maps)
             value = plug_fwd(value, state['unused_layouts'], layout_maps)
             value = state['steck_map'][value]
-            state['whitening_state'] = lcg64(state['whitening_state'])
+            whitening_val = state['whitening_stream'].next_u64()
             value = ALPHA[(ALPHA.index(value) +
-                           state['whitening_state'] % N) % N]
+                           whitening_val % N) % N]
         else:
-            state['whitening_state'] = lcg64(state['whitening_state'])
+            whitening_val = state['whitening_stream'].next_u64()
             value = ALPHA[(ALPHA.index(value) -
-                           state['whitening_state'] % N) % N]
+                           whitening_val % N) % N]
             value = state['steck_map'][value]
             value = plug_inv(value, state['unused_layouts'], inv_layout_maps)
             for index in range(len(state['unused_layouts']) - 1, -1, -1):
@@ -912,7 +1187,7 @@ def compute_legacy_key_material(steck_pairs, rotors, enabled_layouts, user_round
     step_pos = list(range(LEGACY_N))
     state = (key_sum ^ 0x5A5A5A5A) & 0xFFFFFFFF
     for i in range(LEGACY_N - 1, 0, -1):
-        state = lcg32(state)
+        state = _legacy_lcg32(state)
         j = state % (i + 1)
         step_pos[i], step_pos[j] = step_pos[j], step_pos[i]
     step_mask = [False] * LEGACY_N
@@ -922,7 +1197,7 @@ def compute_legacy_key_material(steck_pairs, rotors, enabled_layouts, user_round
     trans_perm = list(range(LEGACY_N))
     state = (key_sum ^ 0xDEAD1234) & 0xFFFFFFFF
     for i in range(LEGACY_N - 1, 0, -1):
-        state = lcg32(state)
+        state = _legacy_lcg32(state)
         j = state % (i + 1)
         trans_perm[i], trans_perm[j] = trans_perm[j], trans_perm[i]
     inv_trans_perm = [0] * LEGACY_N
@@ -935,7 +1210,7 @@ def compute_legacy_key_material(steck_pairs, rotors, enabled_layouts, user_round
         perm = list(range(LEGACY_N))
         seed = (key_sum ^ (layout_index * 0x9E3779B9 + 0xABCD1234)) & 0xFFFFFFFF
         for i in range(LEGACY_N - 1, 0, -1):
-            seed = lcg32(seed)
+            seed = _legacy_lcg32(seed)
             j = seed % (i + 1)
             perm[i], perm[j] = perm[j], perm[i]
         layout_maps[name] = {LEGACY_ALPHA[i]: LEGACY_ALPHA[perm[i]] for i in range(LEGACY_N)}
@@ -1022,11 +1297,11 @@ def process_legacy_segment(text, state, decrypt=False):
             value = legacy_plug_fwd(
                 value, state['unused_layouts'], layout_maps)
             value = state['steck_map'][value]
-            state['whitening_state'] = lcg32(state['whitening_state'])
+            state['whitening_state'] = _legacy_lcg32(state['whitening_state'])
             value = LEGACY_ALPHA[(LEGACY_ALPHA.index(
                 value) + state['whitening_state'] % LEGACY_N) % LEGACY_N]
         else:
-            state['whitening_state'] = lcg32(state['whitening_state'])
+            state['whitening_state'] = _legacy_lcg32(state['whitening_state'])
             value = LEGACY_ALPHA[(LEGACY_ALPHA.index(
                 value) - state['whitening_state'] % LEGACY_N + LEGACY_N * 100) % LEGACY_N]
             value = state['steck_map'][value]
@@ -1073,13 +1348,13 @@ def compute_rc4_legacy_key_material(steck_pairs, rotors, enabled_layouts, user_r
     rounds = ((steck_sum + rotor_sum + layout_sum + user_rounds) % 999) + 1
     key_sum = (steck_sum * 31 + rotor_sum * 17 + layout_sum * 13) & U64_MASK
 
-    step_pos = shuffle_indices_with_seed(
+    step_pos = _legacy_shuffle_indices_with_seed(
         LEGACY_N, key_sum ^ STEP_MASK_SEED_CONST)
     step_mask = [False] * LEGACY_N
     for pos in step_pos[:STEP_MASK_ACTIVE]:
         step_mask[pos] = True
 
-    trans_perm = shuffle_indices_with_seed(
+    trans_perm = _legacy_shuffle_indices_with_seed(
         LEGACY_N, key_sum ^ TRANS_SEED_CONST)
     inv_trans_perm = [0] * LEGACY_N
     for index, value in enumerate(trans_perm):
@@ -1088,7 +1363,7 @@ def compute_rc4_legacy_key_material(steck_pairs, rotors, enabled_layouts, user_r
     layout_maps = {}
     inv_layout_maps = {}
     for layout_index, name in enumerate(LEGACY_LAYOUT_NAMES):
-        perm = shuffle_indices_with_seed(
+        perm = _legacy_shuffle_indices_with_seed(
             LEGACY_N,
             (key_sum ^ (((layout_index + 1) * LAYOUT_SEED_MIX +
              LAYOUT_SEED_CONST) & U64_MASK)) & U64_MASK
@@ -1177,11 +1452,11 @@ def process_rc4_legacy_segment(text, state, decrypt=False):
             value = legacy_plug_fwd(
                 value, state['unused_layouts'], layout_maps)
             value = state['steck_map'][value]
-            state['whitening_state'] = lcg64(state['whitening_state'])
+            state['whitening_state'] = _legacy_lcg64(state['whitening_state'])
             value = LEGACY_ALPHA[(LEGACY_ALPHA.index(
                 value) + state['whitening_state'] % LEGACY_N) % LEGACY_N]
         else:
-            state['whitening_state'] = lcg64(state['whitening_state'])
+            state['whitening_state'] = _legacy_lcg64(state['whitening_state'])
             value = LEGACY_ALPHA[(LEGACY_ALPHA.index(
                 value) - state['whitening_state'] % LEGACY_N) % LEGACY_N]
             value = state['steck_map'][value]
@@ -1280,17 +1555,17 @@ def compute_legacy_alphabet_checksum(checksum_input, key_str, version_char=RC4_V
     state = _legacy_fnv_hash64(f'{checksum_input}|{key_str}|{version_char}|chk64')
     out = []
     for index in range(CHECKSUM_LEN):
-        state = lcg64(state ^ index)
+        state = _legacy_lcg64(state ^ index)
         out.append(LEGACY_ALPHA[state % LEGACY_N])
     return ''.join(out)
 
 
 def compute_checksum(checksum_input, key_str, version_char=RC4_VERSION_CHAR):
-    state = hash_str64(f'{checksum_input}|{key_str}|{version_char}|chk64')
+    stream = chacha20_stream_from_seed(
+        f'{checksum_input}|{key_str}|{version_char}|chk64')
     out = []
-    for index in range(CHECKSUM_LEN):
-        state = lcg64(state ^ index)
-        out.append(ALPHA[state % N])
+    for _ in range(CHECKSUM_LEN):
+        out.append(ALPHA[stream.next_u64() % N])
     return ''.join(out)
 
 
@@ -1306,7 +1581,7 @@ def compute_rc3_checksum(plaintext, key_str, length_field=None):
     state = _legacy_fnv_hash64(f'{field}|{plaintext}|{key_str}|chk64')
     out = []
     for index in range(CHECKSUM_LEN):
-        state = lcg64(state ^ index)
+        state = _legacy_lcg64(state ^ index)
         out.append(LEGACY_ALPHA[state % LEGACY_N])
     return ''.join(out)
 
@@ -1315,7 +1590,7 @@ def legacy_compute_checksum(plaintext, key_str):
     state = _legacy_fnv_hash64(f'{plaintext}|{key_str}|chk64')
     out = []
     for index in range(CHECKSUM_LEN):
-        state = lcg64(state ^ index)
+        state = _legacy_lcg64(state ^ index)
         out.append(LEGACY_ALPHA[state % LEGACY_N])
     return ''.join(out)
 
@@ -1338,11 +1613,10 @@ def generate_padding(plaintext, key_str, padding_seed, version_char, pad_len=Non
     if target_len == 0:
         return ''
     out = []
-    state = hash_str64(
+    stream = chacha20_stream_from_seed(
         f'{key_str}|{plaintext}|{padding_seed}|{version_char}|padfill')
-    for index in range(target_len):
-        state = lcg64(state ^ index)
-        out.append(ALPHA[state % N])
+    for _ in range(target_len):
+        out.append(ALPHA[stream.next_u64() % N])
     return ''.join(out)
 
 
@@ -1361,7 +1635,7 @@ def generate_legacy_padding(plaintext, key_str, padding_seed, version_char, pad_
     state = _legacy_fnv_hash64(
         f'{key_str}|{plaintext}|{padding_seed}|{version_char}|padfill')
     for index in range(target_len):
-        state = lcg64(state ^ index)
+        state = _legacy_lcg64(state ^ index)
         out.append(LEGACY_ALPHA[state % LEGACY_N])
     return ''.join(out)
 
@@ -1378,24 +1652,9 @@ def generate_rc3_padding(plaintext, key_str, pad_len=None):
     out = []
     state = _legacy_fnv_hash64(f'{key_str}|{plaintext}|padfill')
     for index in range(target_len):
-        state = lcg64(state ^ index)
+        state = _legacy_lcg64(state ^ index)
         out.append(LEGACY_ALPHA[state % LEGACY_N])
     return ''.join(out)
-
-
-def pack_rc4_payload(plaintext, key_str):
-    version = RC4_VERSION_CHAR
-    length_field = encode_length_field(len(plaintext))
-    padding_seed = compute_padding_seed(
-        plaintext, key_str, length_field, version)
-    padding = generate_padding(plaintext, key_str, padding_seed, version)
-    return {
-        'visible_payload': RC4_FORMAT_TAG + length_field + plaintext + padding,
-        'version': version,
-        'length_field': length_field,
-        'padding': padding,
-        'padding_seed': padding_seed,
-    }
 
 
 def pack_rc6_payload(plaintext, key_str):
@@ -1650,10 +1909,9 @@ def unpack_rc4_legacy_visible_payload(payload):
 
 def keyed_zero_width_order(key_str):
     symbols = ZERO_WIDTH_SYMBOLS[:]
-    state = hash_str64(f'{key_str}|zwperm')
+    stream = chacha20_stream_from_seed(f'{key_str}|zwperm')
     for i in range(len(symbols) - 1, 0, -1):
-        state = lcg64(state ^ i)
-        j = state % (i + 1)
+        j = stream.next_u64() % (i + 1)
         symbols[i], symbols[j] = symbols[j], symbols[i]
     return symbols
 
@@ -1663,10 +1921,9 @@ def keyed_visible_carrier_alphabet(key_str):
     # Same Fisher-Yates-with-seed structure as keyed_zero_width_order, so the
     # 4 carrier digit symbols rotate per key just like the zero-width digits do.
     symbols = [ALPHA[0], ALPHA[1], ALPHA[2], ALPHA[3]]
-    state = hash_str64(f'{key_str}|matperm')
+    stream = chacha20_stream_from_seed(f'{key_str}|matperm')
     for i in range(len(symbols) - 1, 0, -1):
-        state = lcg64(state ^ i)
-        j = state % (i + 1)
+        j = stream.next_u64() % (i + 1)
         symbols[i], symbols[j] = symbols[j], symbols[i]
     return symbols
 
@@ -1725,7 +1982,7 @@ def inject_hidden_carriers(visible_cipher, carrier_stream, key_str):
     counts = [0] * gap_count
     state = hash_str64(f'{key_str}|{len(visible_cipher)}|zwscatter')
     for index in range(len(carrier_stream)):
-        state = lcg64(state ^ index)
+        state = _legacy_lcg64(state ^ index)
         counts[state % gap_count] += 1
 
     cursor = 0
@@ -1778,14 +2035,17 @@ def decode_hidden_carrier_stream(carrier_stream, key_str):
     return ''.join(out)
 
 
-def _try_decode_rc6_metadata(carrier_stream, key_str):
-    if len(carrier_stream) != HIDDEN_SYMBOL_COUNT:
+def _try_decode_rc6_metadata(carrier_stream, key_str, carrier_count=None):
+    if carrier_count is None:
+        carrier_count = LEGACY_HIDDEN_SYMBOL_COUNT
+    if len(carrier_stream) != carrier_count:
         return None
+    logical_len = carrier_count // HIDDEN_CHUNK_LEN
     try:
         metadata = decode_hidden_carrier_stream(carrier_stream, key_str)
     except ValueError:
         return None
-    if len(metadata) != HIDDEN_METADATA_LEN or metadata[0] != RC6_VERSION_CHAR:
+    if len(metadata) != logical_len or metadata[0] != RC6_VERSION_CHAR:
         return None
     return metadata
 
@@ -1794,17 +2054,22 @@ def encrypt_rc6_stream(plaintext, key, materialize=False):
     payload = pack_rc6_payload(plaintext, key['key_str'])
     checksum = compute_checksum(payload['visible_payload'], derive_mac_subkey(
         key['key_str']), payload['version'])
+    logical_len = derive_metadata_logical_len(key['key_str'])
+    carrier_count = logical_len * HIDDEN_CHUNK_LEN
+    metadata_payload = build_metadata_payload(
+        payload['version'], checksum, key['key_str'], logical_len)
     if materialize:
         carrier_stream = encode_visible_carrier_chars(
-            payload['version'] + checksum, key['key_str'])
+            metadata_payload, key['key_str'])
         wildcards = None
     else:
         carrier_stream = encode_hidden_carrier_chars(
-            payload['version'] + checksum, key['key_str'])
+            metadata_payload, key['key_str'])
         wildcards = derive_carrier_wildcards(
-            key['key_str'], HIDDEN_SYMBOL_COUNT)
-    schedule = build_stream_schedule(key['key_str'], len(
-        plaintext), len(payload['visible_payload']))
+            key['key_str'], carrier_count)
+    schedule = build_stream_schedule(
+        key['key_str'], len(plaintext), len(payload['visible_payload']),
+        carrier_count=carrier_count)
     state = create_cipher_state(
         key['steck_pairs'], key['rotors'], key['enabled'], key['user_rounds'], key['nonce'])
 
@@ -1833,10 +2098,15 @@ def encrypt_rc6_stream(plaintext, key, materialize=False):
     return ''.join(out)
 
 
-def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, materialize=False):
+def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, materialize=False,
+                                carrier_count=None, logical_len=None):
+    if carrier_count is None:
+        carrier_count = derive_metadata_carrier_count(key['key_str'])
+    if logical_len is None:
+        logical_len = carrier_count // HIDDEN_CHUNK_LEN
     if materialize:
         visible_len = len(ciphertext)
-        payload_len = visible_len - CHECKSUM_LEN - HIDDEN_SYMBOL_COUNT
+        payload_len = visible_len - CHECKSUM_LEN - carrier_count
     else:
         visible_len = sum(
             1 for char in ciphertext if char not in ZERO_WIDTH_SET)
@@ -1844,12 +2114,12 @@ def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, mat
     if payload_len < 1 + LEN_FIELD_LEN:
         return None
     schedule = build_stream_schedule(
-        key['key_str'], plaintext_len, payload_len)
+        key['key_str'], plaintext_len, payload_len, carrier_count=carrier_count)
     if len(schedule) != len(ciphertext):
         return None
 
     wildcards = None if materialize else derive_carrier_wildcards(
-        key['key_str'], HIDDEN_SYMBOL_COUNT)
+        key['key_str'], carrier_count)
     state = create_cipher_state(
         key['steck_pairs'], key['rotors'], key['enabled'], key['user_rounds'], key['nonce'])
     payload = []
@@ -1861,7 +2131,7 @@ def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, mat
     for index, event in enumerate(schedule):
         char = ciphertext[index]
         if event == 'carrier':
-            if carrier_index >= HIDDEN_SYMBOL_COUNT:
+            if carrier_index >= carrier_count:
                 return None
             if materialize:
                 if char not in ALPHA:
@@ -1884,7 +2154,7 @@ def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, mat
         else:
             payload.append(value)
 
-    if carrier_index != HIDDEN_SYMBOL_COUNT:
+    if carrier_index != carrier_count:
         return None
 
     if materialize:
@@ -1895,7 +2165,8 @@ def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, mat
             return None
     else:
         carrier_stream = ''.join(carrier_chars)
-        metadata = _try_decode_rc6_metadata(carrier_stream, key['key_str'])
+        metadata = _try_decode_rc6_metadata(
+            carrier_stream, key['key_str'], carrier_count)
         if metadata is None:
             return None
 
@@ -1908,7 +2179,6 @@ def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, mat
         return None
 
     version = metadata[0]
-    metadata_checksum = metadata[1:]
     expected_checksum = compute_checksum(
         payload_text, derive_mac_subkey(key['key_str']), version)
     padding_seed = compute_padding_seed(
@@ -1918,7 +2188,10 @@ def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, mat
     expected_padding = generate_padding(
         visible_fields['plaintext'], key['key_str'], padding_seed, version, expected_pad_len)
     version_ok = version == RC6_VERSION_CHAR
-    checksum_ok = version_ok and checksum == expected_checksum and metadata_checksum == checksum
+    scattered_checksum_ok = checksum == expected_checksum
+    metadata_ok = verify_hidden_metadata(
+        metadata, version, expected_checksum, key['key_str'], logical_len)
+    checksum_ok = version_ok and scattered_checksum_ok and metadata_ok
     padding_ok = version_ok and len(
         visible_fields['padding']) == expected_pad_len and visible_fields['padding'] == expected_padding
     verified = version_ok and checksum_ok and padding_ok
@@ -1931,7 +2204,7 @@ def _attempt_decrypt_rc6_stream(ciphertext, key, diagnostics, plaintext_len, mat
         'checksum_ok': checksum_ok,
         'padding_ok': padding_ok,
         'structure_ok': True,
-        'metadata_ok': True,
+        'metadata_ok': metadata_ok,
         'version_ok': version_ok,
         'diagnostics': diagnostics,
         'payload': payload_text,
@@ -1953,13 +2226,16 @@ def decrypt_rc6_stream(ciphertext, key, diagnostics, extracted, materialize=Fals
             return None
         if any(char not in ALPHA for char in ciphertext):
             return None
+        carrier_count = derive_metadata_carrier_count(key['key_str'])
+        logical_len = derive_metadata_logical_len(key['key_str'])
         visible_len = len(ciphertext)
-        payload_len = visible_len - CHECKSUM_LEN - HIDDEN_SYMBOL_COUNT
+        payload_len = visible_len - CHECKSUM_LEN - carrier_count
     else:
-        if extracted['hidden_carrier_count'] != HIDDEN_SYMBOL_COUNT:
+        meta_params = resolve_metadata_params(
+            key['key_str'], extracted['hidden_carrier_count'])
+        if meta_params is None:
             return None
-        if _try_decode_rc6_metadata(extracted['carrier_stream'], key['key_str']) is None:
-            return None
+        carrier_count, logical_len = meta_params
         visible_len = len(extracted['visible_text'])
         payload_len = visible_len - CHECKSUM_LEN
     if payload_len < 1 + LEN_FIELD_LEN:
@@ -1970,7 +2246,8 @@ def decrypt_rc6_stream(ciphertext, key, diagnostics, extracted, materialize=Fals
         if plaintext_len < 0:
             continue
         result = _attempt_decrypt_rc6_stream(
-            ciphertext, key, diagnostics, plaintext_len, materialize=materialize)
+            ciphertext, key, diagnostics, plaintext_len, materialize=materialize,
+            carrier_count=carrier_count, logical_len=logical_len)
         if result and result.get('success'):
             return result
     return None
@@ -2052,6 +2329,11 @@ def parse_key(key_str):
     if len(parts) not in (4, 5):
         raise ValueError(f'Expected 4 or 5 sections, got {len(parts)}')
 
+    def strict_decimal(text, label):
+        if not text or any(char < '0' or char > '9' for char in text):
+            raise ValueError(f'Invalid decimal {label}')
+        return int(text)
+
     enabled_str, rotor_str, steck_str, rounds_str = parts[:4]
     nonce_str = parts[4] if len(parts) == 5 else ''
     wide_key = enabled_str.startswith(KEY_V6_PREFIX)
@@ -2064,7 +2346,14 @@ def parse_key(key_str):
                 raise ValueError(f'Invalid enabled layout digit: {repr(char)}')
             enabled.append(LAYOUT_NAMES[layout_index])
     else:
-        enabled = [LAYOUT_NAMES[int(char)] for char in enabled_str]
+        enabled = [
+            LAYOUT_NAMES[strict_decimal(char, 'enabled layout digit')]
+            for char in enabled_str
+        ]
+    if not enabled:
+        raise ValueError('At least one enabled layout is required')
+    if len(set(enabled)) != len(enabled):
+        raise ValueError('Enabled layouts must not contain duplicates')
     rotors = []
     if not rotor_str or len(rotor_str) % 3 != 0:
         raise ValueError('Rotor section must be groups of 3 digits')
@@ -2073,8 +2362,10 @@ def parse_key(key_str):
             layout_index = decode_base36_index(rotor_str[i])
             pos = decode_base36_index(rotor_str[i + 1:i + 3])
         else:
-            layout_index = int(rotor_str[i])
-            pos = int(rotor_str[i + 1:i + 3])
+            layout_index = strict_decimal(
+                rotor_str[i], 'rotor layout')
+            pos = strict_decimal(
+                rotor_str[i + 1:i + 3], 'rotor position')
         if layout_index >= len(LAYOUT_NAMES):
             raise ValueError(f'Invalid rotor layout index at {i}')
         if pos >= N:
@@ -2089,13 +2380,22 @@ def parse_key(key_str):
                 ai = decode_base36_index(steck_str[i:i + 2])
                 bi = decode_base36_index(steck_str[i + 2:i + 4])
             else:
-                ai = int(steck_str[i:i + 2])
-                bi = int(steck_str[i + 2:i + 4])
+                ai = strict_decimal(
+                    steck_str[i:i + 2], 'steck index')
+                bi = strict_decimal(
+                    steck_str[i + 2:i + 4], 'steck index')
             if ai >= N or bi >= N:
                 raise ValueError(
                     'Steck section contains an out-of-range alphabet index')
             steck_pairs.append((ALPHA[ai], ALPHA[bi]))
-    user_rounds = int(rounds_str)
+    used_steck_chars = set()
+    for left, right in steck_pairs:
+        if left == right:
+            raise ValueError('Steck pairs must contain two distinct characters')
+        if left in used_steck_chars or right in used_steck_chars:
+            raise ValueError('A character may appear in only one steck pair')
+        used_steck_chars.update((left, right))
+    user_rounds = strict_decimal(rounds_str, 'rounds')
     if not 1 <= user_rounds <= 999:
         raise ValueError('Rounds section must be 001-999')
     nonce = ''
@@ -2104,7 +2404,8 @@ def parse_key(key_str):
             raise ValueError('Nonce section must be groups of 2 digits')
         for i in range(0, len(nonce_str), 2):
             index = decode_base36_index(
-                nonce_str[i:i + 2]) if wide_key else int(nonce_str[i:i + 2])
+                nonce_str[i:i + 2]) if wide_key else strict_decimal(
+                    nonce_str[i:i + 2], 'nonce index')
             if index >= N:
                 raise ValueError(
                     'Nonce section contains an out-of-range alphabet index')
@@ -2632,7 +2933,199 @@ def encrypt_text(plaintext, key_str, materialize=False):
     return encrypt_rc6_stream(plaintext, key, materialize=materialize)
 
 
-def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
+def _dual_b64url_encode(data):
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+
+def _dual_b64url_decode(text):
+    if not text or len(text) > DUAL_MAX_ENCODED_CHARS or any(
+            char not in BASE36_ALPHABET +
+                       BASE36_ALPHABET.lower() + '-_' for char in text):
+        raise ValueError('Invalid dual ciphertext encoding')
+    padding = '=' * ((4 - len(text) % 4) % 4)
+    try:
+        decoded = base64.b64decode(
+            text + padding, altchars=b'-_', validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError('Invalid dual ciphertext encoding') from exc
+    if _dual_b64url_encode(decoded) != text:
+        raise ValueError('Non-canonical dual ciphertext encoding')
+    return decoded
+
+
+def _dual_stream_bytes(key_str, nonce, slot_index, domain, count):
+    seed = f'{key_str}{domain}{nonce.hex()}|{slot_index}'
+    return chacha20_stream_from_seed(seed)._next_bytes(count)
+
+
+def _dual_xor(data, mask):
+    return bytes(left ^ right for left, right in zip(data, mask))
+
+
+def _dual_build_slot(inner_ciphertext, key_str, nonce, slot_index,
+                     slot_len, flags):
+    inner_bytes = inner_ciphertext.encode('utf-8')
+    filler_len = slot_len - DUAL_CONTROL_LEN - len(inner_bytes)
+    if filler_len < DUAL_MIN_FILLER_LEN:
+        raise ValueError('Dual slot is too small')
+    control = DUAL_INTERNAL_MAGIC + bytes([flags]) + \
+        len(inner_bytes).to_bytes(4, 'big')
+    filler = _dual_stream_bytes(
+        key_str, nonce, slot_index, DUAL_FILLER_DOMAIN, filler_len)
+    frame = control + inner_bytes + filler
+    mask = _dual_stream_bytes(
+        key_str, nonce, slot_index, DUAL_WRAP_DOMAIN, slot_len)
+    return _dual_xor(frame, mask)
+
+
+def encrypt_dual_message(real_plaintext, faux_plaintext, real_key_str=None,
+                         faux_key_str=None, materialize=False,
+                         _envelope_nonce=None):
+    """Create one prefix-free ciphertext decryptable by either generated key."""
+    if faux_plaintext is None:
+        raise ValueError('faux_plaintext is required for dual messages')
+    faux_key_was_supplied = faux_key_str is not None
+    real_key_str = (real_key_str or generate_key()).strip()
+    faux_key_str = (faux_key_str or generate_key()).strip()
+    if faux_key_was_supplied and faux_key_str == real_key_str:
+        raise ValueError('Intended and faux keys must be different')
+    while faux_key_str == real_key_str:
+        faux_key_str = generate_key()
+    for key_str in (real_key_str, faux_key_str):
+        if not key_str.strip().split()[0].startswith(KEY_V6_PREFIX):
+            raise ValueError(K6_ENCRYPT_REQUIRED_ERROR)
+        parse_key(key_str)
+
+    real_inner = encrypt_text(
+        real_plaintext, real_key_str, materialize=materialize)
+    faux_inner = encrypt_text(
+        faux_plaintext, faux_key_str, materialize=materialize)
+    max_inner_len = max(
+        len(real_inner.encode('utf-8')), len(faux_inner.encode('utf-8')))
+    slot_len = DUAL_CONTROL_LEN + max_inner_len + DUAL_MIN_FILLER_LEN
+    if slot_len > DUAL_MAX_SLOT_BYTES:
+        raise ValueError('Dual message exceeds the maximum slot size')
+
+    nonce = secrets.token_bytes(
+        DUAL_NONCE_LEN) if _envelope_nonce is None else bytes(_envelope_nonce)
+    if len(nonce) != DUAL_NONCE_LEN:
+        raise ValueError(
+            f'Dual envelope nonce must be {DUAL_NONCE_LEN} bytes')
+    flags = DUAL_FLAG_MATERIALIZE if materialize else 0
+    entries = [
+        (real_inner, real_key_str, 'real'),
+        (faux_inner, faux_key_str, 'faux'),
+    ]
+    if nonce[0] & 1:
+        entries.reverse()
+    slots = [
+        _dual_build_slot(inner, key, nonce, index, slot_len, flags)
+        for index, (inner, key, _) in enumerate(entries)
+    ]
+    ciphertext = _dual_b64url_encode(nonce + slots[0] + slots[1])
+    return {
+        'ciphertext': ciphertext,
+        'real': {'key': real_key_str.strip()},
+        'faux': {'key': faux_key_str.strip()},
+        'materialize': bool(materialize),
+        'format': DUAL_FORMAT_LABEL,
+    }
+
+
+def _try_decrypt_dual_message(ciphertext, key_str):
+    try:
+        raw = _dual_b64url_decode(ciphertext)
+    except ValueError:
+        return None
+    if len(raw) < DUAL_NONCE_LEN + (2 * (
+            DUAL_CONTROL_LEN + DUAL_MIN_FILLER_LEN)):
+        return None
+    slots_bytes = len(raw) - DUAL_NONCE_LEN
+    if slots_bytes % 2:
+        return None
+    slot_len = slots_bytes // 2
+    if slot_len > DUAL_MAX_SLOT_BYTES:
+        return None
+    nonce = raw[:DUAL_NONCE_LEN]
+    matches = []
+    for slot_index in range(2):
+        start = DUAL_NONCE_LEN + slot_index * slot_len
+        wrapped = raw[start:start + slot_len]
+        mask = _dual_stream_bytes(
+            key_str, nonce, slot_index, DUAL_WRAP_DOMAIN, slot_len)
+        frame = _dual_xor(wrapped, mask)
+        if frame[:len(DUAL_INTERNAL_MAGIC)] != DUAL_INTERNAL_MAGIC:
+            continue
+        flags = frame[len(DUAL_INTERNAL_MAGIC)]
+        if flags & ~DUAL_FLAG_MATERIALIZE:
+            continue
+        length_start = len(DUAL_INTERNAL_MAGIC) + 1
+        inner_len = int.from_bytes(
+            frame[length_start:length_start + 4], 'big')
+        if inner_len <= 0 or inner_len > slot_len - \
+                DUAL_CONTROL_LEN - DUAL_MIN_FILLER_LEN:
+            continue
+        inner_start = DUAL_CONTROL_LEN
+        filler_start = inner_start + inner_len
+        filler = frame[filler_start:]
+        expected_filler = _dual_stream_bytes(
+            key_str, nonce, slot_index, DUAL_FILLER_DOMAIN, len(filler))
+        if not hmac.compare_digest(filler, expected_filler):
+            continue
+        try:
+            inner_ciphertext = frame[
+                inner_start:inner_start + inner_len].decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        result = decrypt_text(
+            inner_ciphertext,
+            key_str,
+            materialize=bool(flags & DUAL_FLAG_MATERIALIZE),
+            _allow_dual=False,
+        )
+        if result.get('success') and result.get('verified'):
+            matches.append(result)
+    if len(matches) != 1:
+        return None
+    result = dict(matches[0])
+    result['inner_format'] = result.get('format')
+    result['format'] = DUAL_FORMAT_LABEL
+    result['diagnostics'] = analyze_ciphertext(ciphertext)
+    result['materialize'] = bool(result.get('materialize'))
+    result['error'] = None
+    result['success'] = True
+    result['verified'] = True
+    return result
+
+
+def encrypt_decoy_bundle(real_plaintext, decoy_plaintext, real_key_str=None,
+                         decoy_key_str=None, materialize=False):
+    """Deprecated Option A API: return two independent ciphertexts.
+
+    New callers should use encrypt_dual_message for one ciphertext and two keys.
+    """
+    if not real_key_str:
+        raise ValueError('real_key_str is required for decoy bundles')
+    if not real_key_str.strip().split()[0].startswith(KEY_V6_PREFIX):
+        raise ValueError(K6_ENCRYPT_REQUIRED_ERROR)
+    if decoy_key_str is None:
+        decoy_key_str = generate_key()
+    real_ciphertext = encrypt_text(real_plaintext, real_key_str, materialize=materialize)
+    decoy_ciphertext = encrypt_text(
+        decoy_plaintext, decoy_key_str, materialize=materialize)
+    return {
+        'real': {'key': real_key_str.strip(), 'ciphertext': real_ciphertext},
+        'decoy': {
+            'key': decoy_key_str.strip(),
+            'plaintext': decoy_plaintext,
+            'ciphertext': decoy_ciphertext,
+        },
+        'materialize': materialize,
+    }
+
+
+def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=(),
+                 _allow_dual=True):
     diagnostics = analyze_ciphertext(ciphertext)
     extracted = extract_carrier_info(ciphertext)
     visible_text = extracted['visible_text']
@@ -2643,12 +3136,18 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
         return _finalize_v200_decrypt_result(v200_result, diagnostics, visible_text)
 
     key = parse_key(key_str)
+    dual_probed = False
 
     if materialize:
         rc6_result = decrypt_rc6_stream(
             ciphertext, key, diagnostics, extracted, materialize=True)
         if rc6_result is not None:
             return rc6_result
+        if _allow_dual:
+            dual_probed = True
+            dual_result = _try_decrypt_dual_message(ciphertext, key['key_str'])
+            if dual_result is not None:
+                return dual_result
         return _generic_decrypt_failure({
             'plaintext': '',
             'verified': False,
@@ -2668,7 +3167,10 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
     rc6_result = decrypt_rc6_stream(ciphertext, key, diagnostics, extracted)
     if rc6_result is not None:
         return rc6_result
-    if _try_decode_rc6_metadata(extracted['carrier_stream'], key['key_str']) is not None:
+    effective = effective_metadata_carrier_count(
+        key['key_str'], extracted['hidden_carrier_count'])
+    if effective is not None and _try_decode_rc6_metadata(
+            extracted['carrier_stream'], key['key_str'], effective) is not None:
         return _generic_decrypt_failure({
             'plaintext': '',
             'verified': False,
@@ -2683,6 +3185,15 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
             'format': 'rc.6-stream',
             'error': GENERIC_DECRYPT_ERROR,
         }, '', key['key_str'])
+
+    if _allow_dual:
+        # A strict canonical-base64/equal-slot probe lets valid dual envelopes
+        # avoid traversing every legacy rotor path. A failed probe falls through
+        # unchanged so historical format detection remains available.
+        dual_probed = True
+        dual_result = _try_decrypt_dual_message(ciphertext, key['key_str'])
+        if dual_result is not None:
+            return dual_result
 
     if visible_text.startswith(LEGACY_RC3_HEADER):
         body = visible_text[len(LEGACY_RC3_HEADER):]
@@ -2725,11 +3236,21 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
         }
 
         if extracted['hidden_carrier_count'] == 0:
+            if _allow_dual and not dual_probed:
+                dual_result = _try_decrypt_dual_message(
+                    ciphertext, key['key_str'])
+                if dual_result is not None:
+                    return dual_result
             return _generic_decrypt_failure({
                 **base_result,
             }, visible_fields['plaintext'], key['key_str'], rc4_state['km'], rc4_state)
 
         if extracted['hidden_carrier_count'] != HIDDEN_SYMBOL_COUNT:
+            if _allow_dual and not dual_probed:
+                dual_result = _try_decrypt_dual_message(
+                    ciphertext, key['key_str'])
+                if dual_result is not None:
+                    return dual_result
             return _generic_decrypt_failure({
                 **base_result,
             }, visible_fields['plaintext'], key['key_str'], rc4_state['km'], rc4_state)
@@ -2738,6 +3259,11 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
             hidden_cipher = _legacy_decode_hidden_carrier_stream(
                 extracted['carrier_stream'], key['key_str'])
         except ValueError:
+            if _allow_dual and not dual_probed:
+                dual_result = _try_decrypt_dual_message(
+                    ciphertext, key['key_str'])
+                if dual_result is not None:
+                    return dual_result
             return _generic_decrypt_failure({
                 **base_result,
             }, visible_fields['plaintext'], key['key_str'], rc4_state['km'], rc4_state)
@@ -2745,6 +3271,11 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
         hidden_payload = process_rc4_legacy_segment(
             hidden_cipher, rc4_state, decrypt=True)
         if len(hidden_payload) != HIDDEN_METADATA_LEN:
+            if _allow_dual and not dual_probed:
+                dual_result = _try_decrypt_dual_message(
+                    ciphertext, key['key_str'])
+                if dual_result is not None:
+                    return dual_result
             return _generic_decrypt_failure({
                 **base_result,
                 'hidden_cipher': hidden_cipher,
@@ -2777,6 +3308,11 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
             'version': version,
             'error': None if verified else GENERIC_DECRYPT_ERROR,
         }
+        if not verified and _allow_dual and not dual_probed:
+            dual_result = _try_decrypt_dual_message(
+                ciphertext, key['key_str'])
+            if dual_result is not None:
+                return dual_result
         return _finalize_decrypt_result(result, visible_fields['plaintext'], key['key_str'], rc4_state['km'], rc4_state)
 
     pos = legacy_checksum_pos(key['key_str'], len(visible_text))
@@ -2807,7 +3343,15 @@ def decrypt_text(ciphertext, key_str, materialize=False, key_candidates=()):
         'diagnostics': diagnostics,
         'payload': stripped,
     }
-    return _finalize_decrypt_result(result, plaintext, key['key_str'], state['km'], state)
+    if verified:
+        return _finalize_decrypt_result(
+            result, plaintext, key['key_str'], state['km'], state)
+    if _allow_dual and not dual_probed:
+        dual_result = _try_decrypt_dual_message(ciphertext, key['key_str'])
+        if dual_result is not None:
+            return dual_result
+    return _finalize_decrypt_result(
+        result, plaintext, key['key_str'], state['km'], state)
 
 
 def calc_ioc(text):
@@ -2848,12 +3392,13 @@ def calc_key_strength(parsed_key):
     rotor_combos = (enabled_count * N) ** rotor_count
     steck_combos = _steck_pairing_count(N, pair_count)
     round_combos = 999
-    nonce_combos = (N ** 3) if parsed_key['nonce'] else 1
+    nonce_combos = (N ** len(parsed_key['nonce'])) if parsed_key['nonce'] else 1
 
     total = layout_combos * rotor_combos * \
         steck_combos * round_combos * nonce_combos
-    km = compute_key_material(
-        parsed_key['steck_pairs'], parsed_key['rotors'], parsed_key['enabled'], parsed_key['user_rounds'])
+    final_rounds = compute_round_count(
+        parsed_key['steck_pairs'], parsed_key['rotors'],
+        parsed_key['enabled'], parsed_key['user_rounds'])
     return {
         'family_bits': math.log2(total),
         'total': total,
@@ -2871,7 +3416,7 @@ def calc_key_strength(parsed_key):
             'rotor_layouts': [rotor['layout'] for rotor in parsed_key['rotors']],
             'steck_pairs': pair_count,
             'base_rounds': parsed_key['user_rounds'],
-            'final_rounds': km['rounds'],
+            'final_rounds': final_rounds,
             'nonce_present': bool(parsed_key['nonce']),
             'nonce': parsed_key['nonce'] or '-',
         }
@@ -2924,9 +3469,9 @@ def generate_key(num_rotors=None, num_steck_pairs=None, num_layouts=None, user_r
                        for index in range(steck_count)]
         final_rounds = user_rounds if user_rounds is not None else secrets.randbelow(999) + 1
         nonce = ''.join(ALPHA[secrets.randbelow(N)]
-                        for _ in range(3)) if nonce_flag else ''
+                        for _ in range(NONCE_LEN)) if nonce_flag else ''
         key = encode_key(enabled, rotors, steck_pairs, final_rounds, nonce)
-        if calc_key_strength(parse_key(key))['family_bits'] >= MIN_GENERATED_KEY_BITS:
+        if calc_key_strength(parse_key(key))['total'] >= MIN_GENERATED_KEYSPACE:
             return key
     raise ValueError(f'Unable to generate a key with at least {MIN_GENERATED_KEY_BITS:.1f} bits using the requested constraints')
 
@@ -2938,6 +3483,92 @@ def cmd_encrypt(plaintext, key_str, materialize=False, to_clipboard=False):
     if to_clipboard:
         _report_encrypt_clipboard(ciphertext, materialize)
     return ciphertext
+
+
+def cmd_encrypt_decoy(real_plaintext, real_key_str, decoy_plaintext, decoy_key_str=None,
+                      materialize=False, bundle_out=None, to_clipboard=False):
+    print(
+        '[!] encrypt-decoy is deprecated Option A (two ciphertexts); '
+        'use encrypt-dual for one ciphertext and two keys.',
+        file=sys.stderr,
+    )
+    bundle = encrypt_decoy_bundle(
+        real_plaintext, decoy_plaintext, real_key_str=real_key_str,
+        decoy_key_str=decoy_key_str, materialize=materialize)
+    if bundle_out:
+        with open(bundle_out, 'w', encoding='utf-8') as handle:
+            json.dump(bundle, handle, indent=2)
+            handle.write('\n')
+        print(f'[i] Bundle written to {bundle_out}', file=sys.stderr)
+    print('[i] Real ciphertext:', file=sys.stderr)
+    sys.stdout.write(bundle['real']['ciphertext'])
+    sys.stdout.write('\n')
+    print('[i] Decoy key:', bundle['decoy']['key'], file=sys.stderr)
+    print('[i] Decoy ciphertext:', file=sys.stderr)
+    sys.stdout.write(bundle['decoy']['ciphertext'])
+    sys.stdout.write('\n')
+    if to_clipboard:
+        _report_encrypt_clipboard(bundle['real']['ciphertext'], materialize)
+    return bundle
+
+
+def cmd_encrypt_dual(real_plaintext, faux_plaintext, real_key_str=None,
+                     faux_key_str=None, materialize=False, bundle_out=None,
+                     faux_out=None, to_clipboard=False,
+                     faux_key_to_clipboard=False, faux_only=False,
+                     json_output=False):
+    bundle = encrypt_dual_message(
+        real_plaintext,
+        faux_plaintext,
+        real_key_str=real_key_str,
+        faux_key_str=faux_key_str,
+        materialize=materialize,
+    )
+    suppress_intended = bool(
+        faux_only or faux_out or faux_key_to_clipboard)
+    if bundle_out and suppress_intended:
+        raise ValueError(
+            '--bundle-out cannot be combined with faux-only copy/export options')
+    faux_kit = {
+        'ciphertext': bundle['ciphertext'],
+        'key': bundle['faux']['key'],
+        'format': bundle['format'],
+        'materialize': bundle['materialize'],
+    }
+    if bundle_out:
+        with open(bundle_out, 'w', encoding='utf-8') as handle:
+            json.dump(bundle, handle, indent=2)
+            handle.write('\n')
+        print(f'[i] Dual bundle written to {bundle_out}', file=sys.stderr)
+    if faux_out:
+        with open(faux_out, 'w', encoding='utf-8') as handle:
+            json.dump(faux_kit, handle, indent=2)
+            handle.write('\n')
+        print(f'[i] Faux-only kit written to {faux_out}', file=sys.stderr)
+    if json_output:
+        json.dump(faux_kit if suppress_intended else bundle, sys.stdout, indent=2)
+        sys.stdout.write('\n')
+    else:
+        sys.stdout.write(bundle['ciphertext'])
+        sys.stdout.write('\n')
+        if not suppress_intended:
+            print('[i] Intended recipient key:',
+                  bundle['real']['key'], file=sys.stderr)
+        print('[i] Faux key:', bundle['faux']['key'], file=sys.stderr)
+    if to_clipboard:
+        if _copy_text_to_clipboard(bundle['ciphertext']):
+            print('[i] Shared dual ciphertext copied to clipboard.',
+                  file=sys.stderr)
+        else:
+            print('[!] Could not copy dual ciphertext to clipboard.',
+                  file=sys.stderr)
+    elif faux_key_to_clipboard:
+        if _copy_text_to_clipboard(bundle['faux']['key']):
+            print('[i] Faux key copied to clipboard.', file=sys.stderr)
+        else:
+            print('[!] Could not copy faux key to clipboard.',
+                  file=sys.stderr)
+    return bundle
 
 
 def cmd_decrypt(ciphertext, key_str, materialize=False):
@@ -2954,7 +3585,12 @@ def cmd_decrypt(ciphertext, key_str, materialize=False):
         format_label = 'rc.6-stream (materialized)'
     print(f'[i] Format: {format_label}', file=sys.stderr)
     if result['verified']:
-        if result['format'] == 'rc.6-stream':
+        if result['format'] == DUAL_FORMAT_LABEL:
+            print(
+                '[OK] Dual slot and inner message fully verified',
+                file=sys.stderr,
+            )
+        elif result['format'] == 'rc.6-stream':
             if result.get('materialize'):
                 print(
                     '[OK] Scattered checksum, materialized metadata, and padding verified', file=sys.stderr)
@@ -3204,7 +3840,7 @@ def _prompt_materialize():
 
 
 def cmd_interactive():
-    print('ENIGMAK v3.0.0-rc.8 Interactive Mode')
+    print('ENIGMAK v3.0.0-rc.9 Interactive Mode')
     print('======================================')
     print('Commands: encrypt, decrypt, keygen, ioc, keystrength, quit')
     print()
@@ -3275,7 +3911,7 @@ def main(argv=None):
         return
 
     parser = FriendlyArgumentParser(
-        description='ENIGMAK v3.0.0-rc.8 - 162-symbol rotor cipher',
+        description='ENIGMAK v3.0.0-rc.9 - 162-symbol rotor cipher',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -3286,9 +3922,51 @@ def main(argv=None):
     enc.add_argument('plaintext')
     enc.add_argument('key')
     enc.add_argument('--materialize', action='store_true',
-                     help='Emit visible carrier metadata (44 ALPHA chars) instead of zero-width carriers')
+                     help='Emit key-derived visible carrier metadata instead of zero-width carriers')
     enc.add_argument('--to-clipboard', action='store_true',
                      help='Copy exact ciphertext to the system clipboard after encryption')
+
+    enc_decoy = sub.add_parser(
+        'encrypt-decoy',
+        help='Deprecated Option A: encrypt two independent message/ciphertext pairs')
+    enc_decoy.add_argument('real_plaintext')
+    enc_decoy.add_argument('real_key')
+    enc_decoy.add_argument('--decoy-plaintext', required=True)
+    enc_decoy.add_argument('--decoy-key', default=None)
+    enc_decoy.add_argument('--materialize', action='store_true')
+    enc_decoy.add_argument('--bundle-out', default=None,
+                             help='Write JSON bundle to this path')
+    enc_decoy.add_argument('--to-clipboard', action='store_true',
+                             help='Copy real ciphertext to clipboard after encryption')
+
+    enc_dual = sub.add_parser(
+        'encrypt-dual',
+        help='Generate two keys and one ciphertext for intended and faux messages',
+    )
+    enc_dual.add_argument('real_plaintext')
+    enc_dual.add_argument('--faux-plaintext', required=True)
+    enc_dual.add_argument('--real-key', default=None)
+    enc_dual.add_argument('--faux-key', default=None)
+    enc_dual.add_argument('--materialize', action='store_true')
+    enc_dual.add_argument('--bundle-out', default=None,
+                          help='Write the full two-key JSON bundle')
+    enc_dual.add_argument('--faux-out', default=None,
+                          help='Write ciphertext and faux key only')
+    enc_dual.add_argument(
+        '--json',
+        action='store_true',
+        help='Write JSON to stdout (faux-only JSON when a faux-only option is used)',
+    )
+    copy_group = enc_dual.add_mutually_exclusive_group()
+    copy_group.add_argument('--to-clipboard', action='store_true',
+                            help='Copy the shared ciphertext')
+    copy_group.add_argument('--faux-key-to-clipboard', action='store_true',
+                            help='Copy only the faux key')
+    enc_dual.add_argument(
+        '--faux-only',
+        action='store_true',
+        help='Do not print the intended recipient key',
+    )
 
     dec = sub.add_parser('decrypt', help='Decrypt ciphertext')
     dec.add_argument('values', nargs='*')
@@ -3320,6 +3998,25 @@ def main(argv=None):
         if args.command == 'encrypt':
             cmd_encrypt(args.plaintext, args.key, materialize=args.materialize,
                         to_clipboard=args.to_clipboard)
+        elif args.command == 'encrypt-decoy':
+            cmd_encrypt_decoy(
+                args.real_plaintext, args.real_key, args.decoy_plaintext,
+                decoy_key_str=args.decoy_key, materialize=args.materialize,
+                bundle_out=args.bundle_out, to_clipboard=args.to_clipboard)
+        elif args.command == 'encrypt-dual':
+            cmd_encrypt_dual(
+                args.real_plaintext,
+                args.faux_plaintext,
+                real_key_str=args.real_key,
+                faux_key_str=args.faux_key,
+                materialize=args.materialize,
+                bundle_out=args.bundle_out,
+                faux_out=args.faux_out,
+                to_clipboard=args.to_clipboard,
+                faux_key_to_clipboard=args.faux_key_to_clipboard,
+                faux_only=args.faux_only,
+                json_output=args.json,
+            )
         elif args.command == 'decrypt':
             ciphertext, key = _resolve_decrypt_args(args)
             cmd_decrypt(ciphertext, key, materialize=args.materialize)

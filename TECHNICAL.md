@@ -1,8 +1,9 @@
 # ENIGMAK Technical Notes
 
-This document describes the current `v3.0.0-rc.8` design at a high level. Its
-active new-message API format label is `rc.6-stream`, with hidden metadata
-version character `5`. It complements `SPECIFICATION.md`, not replaces it.
+This document describes the current `v3.0.0-rc.9` design at a high level. Its
+active single-message API format label is `rc.6-stream`, with hidden metadata
+version character `5`. Dual messages report `rc.9-dual-v1`. It complements
+`SPECIFICATION.md`, not replaces it.
 
 ## Current Snapshot
 
@@ -13,14 +14,16 @@ The current release candidate uses:
 - literal space as a first-class cipher symbol
 - newline as a first-class cipher symbol for multi-line plaintext
 - **1–18 rotors** with a **`66/162`** irregular step mask
-- up to **`N // 2` (80)** stecker pairs
+- up to **`N // 2` (81)** stecker pairs
 - **16** keyed layout labels, including the national layouts added in RC7
 - keyed full-alphabet layout permutations
 - keyed **162-position** diffusion
 - rotor-state feedback in position offsets
 - position whitening
 - **`rc.6-stream`** ciphertext with scattered encrypted checksum characters
-- hidden metadata (version + checksum) encoded as **44** zero-width carriers
+- hidden metadata (version + checksum) encoded as **key-derived** zero-width
+  carriers, with legacy 44-carrier ciphertext still decryptable
+- prefix-free dual-message envelopes (`rc.9-dual-v1`)
 - key-derived **phantom** rotor advancement at carrier positions
 - opt-in materialized carrier mode for transports that strip zero-width text
 - **64-bit** seeded derivation on the active emit/decrypt path
@@ -64,13 +67,14 @@ Logical content before scheduling:
 ```text
 visible payload: [format_tag:1][len_field:4][plaintext][padding:0..16]
 checksum body:   10 symbols derived from visible ciphertext + MAC subkey
-hidden metadata: [version:1][checksum:10] -> 44 zero-width carriers
+hidden metadata: [version:1][checksum:10][optional filler] encoded as
+                 logical_len * 4 carriers
 ```
 
 The emitted stream length is:
 
 ```text
-len(visible_payload) + 10 + 44
+len(visible_payload) + 10 + (logical_len * 4)
 ```
 
 Schedule order is keyed by `plaintext length`, `visible payload length`, and the
@@ -85,15 +89,18 @@ The stream schedule seed is domain-separated from the main cipher seed:
 hash64(keyStr + "|stream-schedule|" + str(plaintext_len))
 ```
 
-As of `v3.0.0-rc.8`, `hash64` and `hash32` are backed by an embedded,
+As of `v3.0.0-rc.9`, live schedule and wildcard draws consume ChaCha20
+keystream from BLAKE3-derived stream keys. `hash64` and `hash32` remain
+backed by an embedded,
 zero-dependency BLAKE3 hash (default `hash` mode): `hash64` is the first 8
 bytes of the 32-byte digest and `hash32` is the first 4 bytes, both big-endian
 unsigned. Earlier release candidates used FNV-1a here; the legacy decrypt paths
 keep frozen FNV-1a copies.
 
-The schedule advances with `LCG64`, mixing in the current stream index, and
-selects among the remaining payload, checksum, and carrier event counts. Python
-integer arithmetic and JavaScript `BigInt` arithmetic must agree exactly.
+The schedule advances with ChaCha20, mixing in the current stream index, and
+selects among the remaining payload, checksum, and carrier event counts with
+rejection sampling. Python integer arithmetic and JavaScript `BigInt`
+arithmetic must agree exactly.
 
 ### Phantom wildcards
 
@@ -155,7 +162,7 @@ with `ROUND_MINIMUM = 10`.
 
 ## 64-Bit Current Path
 
-The active rc.8 path uses 64-bit state for:
+The active rc.9 path uses 64-bit state for:
 
 - rotor-state hash (BLAKE3-derived)
 - key sum (arithmetic, not hashed)
@@ -167,7 +174,7 @@ The active rc.8 path uses 64-bit state for:
 - hidden carrier digit permutation (BLAKE3-derived)
 
 The `hash64` / `hash32` seed values are produced by the embedded BLAKE3 hash as
-of `v3.0.0-rc.8` (see the schedule-seed note above); the `keySum` and the
+of `v3.0.0-rc.8`/`rc.9` (see the schedule-seed note above); the `keySum` and the
 permutation seeds derived from it remain plain 64-bit arithmetic. Legacy `rc.3`,
 `rc.4-hidden`, and `rc.2` decrypt paths retain their historical derivation rules
 (frozen FNV-1a) on the 95-symbol legacy alphabet where required.
@@ -185,13 +192,14 @@ Default key generation:
 
 Decryptors attempt formats in this order:
 
-1. headed **`rc.3`** (`E3|...`)
+1. original **`v2.0.0-legacy`** when the visible body is printable in that alphabet
 2. **`rc.6-stream`** materialized mode when explicitly requested
-3. **`rc.6-stream`** default zero-width carrier mode (44 carriers, hidden
-   metadata version `5`)
-4. **`rc.4-hidden`** (44 carriers, hidden metadata version `4`)
-5. legacy **`rc.2`** visible checksum insertion
-6. original **`v2.0.0-legacy`** ciphertext
+3. **`rc.6-stream`** default zero-width carrier mode (key-derived or legacy 44
+   carriers, hidden metadata version `5`)
+4. bounded prefix-free **`rc.9-dual-v1`**
+5. headed **`rc.3`** (`E3|...`)
+6. **`rc.4-hidden`** (44 carriers, hidden metadata version `4`)
+7. legacy **`rc.2`** visible checksum insertion
 
 ## Browser And Python Interfaces
 
@@ -210,8 +218,8 @@ Python CLI:
 
 ## Compatibility
 
-- New ciphertext from this build is **`rc.6-stream`** with hidden metadata
-  version `5`.
+- New single-message ciphertext from this build is **`rc.6-stream`** with hidden
+  metadata version `5`. Dual ciphertext reports **`rc.9-dual-v1`**.
 - The wire format version is unchanged from RC6, but RC7 ciphertext is not
   compatible with RC6 builds because the active alphabet and keyed permutation
   derivation changed.
@@ -223,4 +231,8 @@ Python CLI:
 - Characters outside `ALPHA` are not reliable for `rc.6-stream` round-trip on the
   current decrypt path even though encrypt may pass them through.
 - The checksum is not authenticated encryption.
+- Dual envelopes (`rc.9-dual-v1`) are a framing/privacy layer over two inner
+  `rc.6-stream` messages. Length and base64url statistics can distinguish them
+  from ordinary ciphertext, and the wrapper is not AEAD.
+- Maximum stecker count is `N // 2` = **81** pairs.
 - ENIGMAK still needs formal review.

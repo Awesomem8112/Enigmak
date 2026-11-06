@@ -1,14 +1,14 @@
-# ENIGMAK v3.0.0-rc.8 Formal Specification
+# ENIGMAK v3.0.0-rc.9 Formal Specification
 
 ## 1. Overview
 
 ENIGMAK is a symmetric, stateful, character-by-character
-substitution-permutation rotor cipher. Release candidate `v3.0.0-rc.8` emits new
+substitution-permutation rotor cipher. Release candidate `v3.0.0-rc.9` emits new
 ciphertext with API format label **`rc.6-stream`** and hidden metadata version
 character **`5`**. This current stream format combines:
 
 - a 162-symbol alphabet
-- a steckerbrett (up to 80 pairs)
+- a steckerbrett (up to 81 pairs)
 - keyed full-alphabet layout permutations (16 layout labels)
 - multi-round shifted substitution
 - keyed 162-position diffusion
@@ -16,9 +16,11 @@ character **`5`**. This current stream format combines:
 - position whitening
 - a visible encrypted payload body (`H` format tag)
 - **10** scattered encrypted checksum characters in the stream
-- hidden metadata (version + checksum) encoded as **44** zero-width carriers
+- hidden metadata (version + checksum) encoded as **key-derived** zero-width
+  carriers (`logical_len * 4`; legacy 44-carrier ciphertext still decrypts)
 - key-derived phantom advancement at carrier positions
 - an opt-in materialized metadata carrier mode
+- optional prefix-free dual-message envelopes (`rc.9-dual-v1`)
 
 Decryptors must also accept older `rc.4-hidden`, headed `rc.3`, legacy `rc.2`,
 and original `v2.0.0-legacy` ciphertext.
@@ -152,6 +154,16 @@ ciphertext stays decryptable. Because the wire format is unchanged, rc.8
 ciphertext differs from rc.7 for the same key only because the seed values
 differ.
 
+As of `v3.0.0-rc.9`, live pseudorandom output no longer uses LCG64/LCG32
+stepping. Each domain-tagged seed string derives a 32-byte ChaCha20 key through
+`blake3_hash(seed, 32)`, and a `Chacha20Stream` object produces keystream bytes
+interpreted as big-endian `next_u64()` / `next_u32()` values. This covers
+permutation shuffles, stream schedule draws (with rejection sampling), carrier
+wildcards, checksum and padding expansion, carrier alphabet ordering, and
+whitening. The rc.4-hidden, rc.3, and rc.2 decrypt paths keep frozen LCG copies.
+Because the wire format is unchanged, rc.9 ciphertext differs from rc.8 for the
+same key because every pseudorandom draw changes.
+
 Current keyed shuffles use rejection-sampling Fisher-Yates over 64-bit random
 state so Python and JavaScript avoid modulo bias and produce identical
 permutations for the same seed and size.
@@ -196,13 +208,23 @@ tag, length field, plaintext, and padding before stream scheduling) using
 
 ### 7.3 Hidden metadata
 
-Logical hidden content:
+Logical hidden content length is **key-derived** on the live encrypt path:
 
 ```text
-[version:1][checksum:10]
+logical_len = 1 + (hash64(keyStr + "|meta-len|") % (N - 1))   // 1 .. N-1
+carrier_count = logical_len * 4
 ```
 
-Version character for new messages: `5`.
+At `N = 162`, logical length ranges **1–161** and carrier count ranges **4–644**.
+Every length in that range has equal probability (~`1/(N-1)`) under uniform keys.
+
+`build_metadata_payload` encodes exactly `logical_len` logical characters:
+
+| `logical_len` | Payload |
+|---------------|---------|
+| `1` | `version` only |
+| `2..10` | `version` + first `logical_len - 1` checksum chars |
+| `>= 11` | `version` + full `checksum` + keyed filler for remaining chars (`"|meta-fill|"`) |
 
 Each hidden alphabet character encodes to four base-4 digits, then maps through
 a keyed permutation of:
@@ -211,21 +233,24 @@ a keyed permutation of:
 U+200B  U+200C  U+200D  U+2060
 ```
 
-Total carriers per message:
+**Legacy branch:** if observed carrier count equals `LEGACY_HIDDEN_SYMBOL_COUNT`
+(44), decrypt uses the frozen 11-logical-char path (version + full checksum) even
+when the key would derive a different count on encrypt.
 
-```text
-11 * 4 = 44
-```
+**Decrypt gate:** `effective_metadata_carrier_count(keyStr, observed)` returns
+44 when `observed == 44`, else the key-derived count when it matches `observed`,
+else fails closed.
 
 ### 7.3.1 Materialized metadata
 
-Materialized metadata is optional. When enabled, the same 44 metadata carrier
-events are represented as visible `ALPHA` characters in a keyed `A,B,C,D`
-alphabet and are encrypted as normal stream participants. When disabled, carrier
-events use zero-width code points and advance state through phantom wildcards.
+Materialized metadata is optional. When enabled, the same key-derived metadata
+carrier events are represented as visible `ALPHA` characters in a keyed
+`A,B,C,D` alphabet and are encrypted as normal stream participants. When
+disabled, carrier events use zero-width code points and advance state through
+phantom wildcards.
 
-The version character, checksum calculation, event counts, and hidden metadata
-content are unchanged. Sender and receiver must use the same materialize setting.
+The version character, checksum calculation, and tiered hidden metadata rules
+are unchanged. Sender and receiver must use the same materialize setting.
 
 ### 7.4 Stream schedule
 
@@ -233,14 +258,16 @@ Let:
 
 - `P` = `len(visible_payload)`
 - `T` = `len(plaintext)`
+- `C` = `derive_metadata_carrier_count(keyStr)` on encrypt, or
+  `effective_metadata_carrier_count(keyStr, observed)` on decrypt
 
 Build a keyed schedule containing exactly:
 
 - `P` payload events
 - `10` checksum events
-- `44` carrier events
+- `C` carrier events
 
-Total stream length = `P + 10 + 44`.
+Total stream length = `P + 10 + C`.
 
 Schedule seed:
 
@@ -282,12 +309,16 @@ through `process_segment` and appended.
 
 Decryptors must attempt formats in this order:
 
-1. headed **`rc.3`** if visible text begins with `E3|`
+1. original **`v2.0.0-legacy`** when the visible body is printable in that alphabet
 2. **`rc.6-stream`** materialized mode when explicitly requested
 3. **`rc.6-stream`** zero-width carrier mode
-4. **`rc.4-hidden`**
-5. legacy **`rc.2`**
-6. original **`v2.0.0-legacy`**
+4. a bounded prefix-free **`rc.9-dual-v1`** probe after modern rc.6 fails
+5. headed **`rc.3`** if visible text begins with `E3|`
+6. **`rc.4-hidden`**
+7. legacy **`rc.2`**
+
+A failed structural rc.4 parse must continue to the dual probe if that probe
+has not already run. Dual decryption never depends on a public prefix.
 
 ### 8.1 RC.3 path
 
@@ -296,14 +327,15 @@ Remove `E3|`, decrypt body with legacy 95-symbol path, parse
 
 ### 8.2 RC.6-stream path
 
-1. In zero-width mode, extract zero-width carriers; require count `44` and
-   decodable metadata with version `5`.
+1. In zero-width mode, extract zero-width carriers. Accept the key-derived
+   carrier count, the prior modulo-derived count, or the historical 44-carrier
+   count when the metadata decodes with version `5`.
 2. In materialized mode, require every ciphertext symbol to be in `ALPHA`; the
    receiver must have explicitly selected materialized mode.
 3. Let `visible_len` = count of non-carrier characters in zero-width mode, or
    total ciphertext length in materialized mode. Let `payload_len` =
-   `visible_len - 10` in zero-width mode or `visible_len - 10 - 44` in
-   materialized mode.
+   `visible_len - 10` in zero-width mode or
+   `visible_len - 10 - carrier_count` in materialized mode.
 4. Brute `pad_len` in `0..MAX_PAD_LEN` to recover `plaintext_len`.
 5. Rebuild schedule from `(plaintext_len, payload_len)`; require
    `len(schedule) == len(ciphertext)`.
@@ -327,6 +359,17 @@ verify version `4`, checksum, and padding.
 Locate keyed visible checksum insertion, remove 10 checksum characters, decrypt
 stripped body, verify legacy checksum.
 
+### 8.5 Dual-message path (`rc.9-dual-v1`)
+
+1. Reject encoded text longer than the 1 MiB-per-slot bound before decoding.
+2. Decode unpadded canonical base64url of `nonce[16] || slot0 || slot1`.
+3. Unwrap both equal-length slots with the supplied key. Internal magic exists
+   only inside wrapped bytes; there is no public prefix.
+4. Compare regenerated filler, then decrypt the inner UTF-8 `rc.6-stream`
+   ciphertext with dual recursion disabled.
+5. Accept exactly one fully verified inner result. Ambiguous or empty matches
+   fail closed with the generic public error.
+
 ## 9. Key Generation
 
 Default key generation:
@@ -340,9 +383,9 @@ Allowed ranges:
 
 - enabled layouts: `1..16` distinct labels
 - rotors: `1..18`
-- stecker pairs: `0..80` (`N // 2`)
+- stecker pairs: `0..81` (`N // 2`)
 - user rounds: `1..999`
-- nonce: optional, three alphabet symbols when present
+- nonce: optional, **five** alphabet symbols when generated by default (`NONCE_LEN = 5`); parsing accepts any even-length nonce section including legacy three-symbol nonces
 
 If constraints make the floor impossible, generation must fail.
 
@@ -350,7 +393,7 @@ If constraints make the floor impossible, generation must fail.
 
 Implementations should report:
 
-- hidden carrier count (expect `44` on valid new messages)
+- hidden carrier count (key-derived on new messages; legacy 44-carrier ciphertext still accepted)
 - materialized metadata mode when requested
 - suspicious clipboard-normalized punctuation
 - control-character presence in ciphertext
@@ -377,11 +420,45 @@ On failed verification:
 Interactive encryption must copy exact ciphertext to the system clipboard when
 possible.
 
-## 13. Limits
+## 13. Dual messages (`rc.9-dual-v1`)
+
+`encrypt_dual_message` / `encryptDualMessage` emits **one** prefix-free
+ciphertext and two independently generated `K6:` keys:
+
+```text
+ciphertext = unpadded_base64url(nonce[16] || slot0 || slot1)
+slot       = ChaCha20XOR(magic[4] || flags[1] || inner_len_be[4]
+                         || utf8(inner_rc6) || keyed_filler)
+```
+
+- There is no public magic, header, or delimiter in the emitted ciphertext.
+  Internal magic exists only inside key-wrapped slot bytes.
+- Slot order is randomized from the nonce low bit. Decrypt tries both slots
+  and accepts exactly one fully verified inner `rc.6-stream` result.
+- Filler is regenerated and compared before inner parsing. Tampered filler
+  fails closed.
+- Slot size is bounded at 1 MiB; encoded length is rejected before allocation.
+- Returned format is `rc.9-dual-v1`. The result does not report which slot
+  matched.
+- The wrapper is framing/privacy, not AEAD.
+
+CLI: `encrypt-dual REAL --faux-plaintext FAUX` with optional supplied keys,
+`--materialize`, `--json`, `--bundle-out`, `--faux-out`, `--faux-only`, and
+mutually exclusive clipboard options. `--faux-only` / `--faux-out` must not
+print the intended key.
+
+## 13.1 Deprecated Option A decoy bundles
+
+`encrypt_decoy_bundle` / `encryptDecoyBundle` and `encrypt-decoy` remain
+available as two independent ciphertexts. They are not the dual-slot format.
+
+## 14. Limits
 
 - The checksum is an integrity signal, not authenticated encryption.
 - ENIGMAK is not formally audited.
 - `rc.6-stream` round-trip requires plaintext and ciphertext stream symbols
   (except carriers) to remain inside `ALPHA`.
-- The API format label remains `rc.6-stream` for the version-5 stream wire
-  format introduced before RC7.
+- Dual ciphertext reports `rc.9-dual-v1`. The wrapper is not AEAD; size and
+  base64url statistics can distinguish it from ordinary messages.
+- The single-message API format label remains `rc.6-stream` for the version-5
+  stream wire format introduced before RC7.

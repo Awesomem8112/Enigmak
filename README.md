@@ -11,19 +11,20 @@ those purposes, use AES-256 or another formally audited standard.
 
 ## Current Protocol Snapshot
 
-The current workspace target is `v3.0.0-rc.8`. Its active new-message API
+The current workspace target is `v3.0.0-rc.9`. Its active new-message API
 format label is still `rc.6-stream`, with hidden metadata version character
-`5`. This is the version-5 stream wire format carried forward into rc.8, and it
+`5`. This is the version-5 stream wire format carried forward into rc.9, and it
 uses:
 
 - a 162-symbol alphabet with printable ASCII, European extended characters, and `\n`
 - 1-18 rotors with a `66/162` irregular step mask
-- up to 80 stecker pairs
+- up to 81 stecker pairs
 - keyed full-alphabet layout permutations
 - keyed 162-position diffusion
-- BLAKE3-derived seeds for all live key-derived math (first 8 and 4 digest
-  bytes as 64-bit and 32-bit big-endian integers), replacing rc.7's FNV-1a
-- 64-bit seeded state for all current deterministic key-derived math
+- BLAKE3-derived seeds for domain-tagged ChaCha20 key derivation (32-byte digest
+  output), replacing direct LCG seed integers from rc.8
+- ChaCha20 keystream for all live permutation, scheduling, wildcard, checksum,
+  padding, carrier-order, and whitening pseudorandom output
 - rotor-state feedback in position offsets
 - position whitening
 - a visible encrypted body with no `E3|` prefix
@@ -42,22 +43,29 @@ uses:
 - **Stream format** - new ciphertext uses `rc.6-stream`, with encrypted checksum
   characters scattered through the stream and zero-width carriers advanced by
   deterministic phantom characters. There is no fixed visible checksum prefix.
-- **Materialized metadata option** - the same stream format can emit its 44
+- **Materialized metadata option** - the same stream format can emit key-derived
   metadata carriers as visible `ALPHA` characters for storage systems that strip
   zero-width text. Sender and receiver must use the same setting.
+- **Dual messages** - optional intended and faux plaintexts produce one
+  prefix-free ciphertext and two independently generated keys. Either key
+  returns its own fully verified plaintext; unrelated keys fail generically.
+- **Deprecated Option A decoy bundles** - the old two-ciphertext API remains
+  available for compatibility, but it is not the same-blob dual format.
 - **Backward-compatible decryption** - decryptors still accept old `E3|`
   `rc.3` messages, legacy unheaded `rc.2` ciphertext, and `rc.4-hidden`
   ciphertext from rc.4 and rc.5.
-- **BLAKE3 seed derivation** - as of rc.8, key-derived permutation seeding,
-  step mask seeding, whitening, rotor-state hashing, MAC subkey, stream
-  schedule, and carrier wildcards all derive from an embedded zero-dependency
-  BLAKE3 hash (validated against the official BLAKE3 test vectors) instead of
-  FNV-1a. Legacy rc.4/rc.3/rc.2 and v2.0.0 decrypt paths keep frozen FNV-1a.
-- **64-bit keyed core** - current key-derived permutation seeding, step mask
-  seeding, whitening, rotor-state hashing, and related state all use 64-bit
-  arithmetic in the active `rc.6` emit path.
+- **ChaCha20 CSPRNG** - as of rc.9, key-derived permutation shuffling, stream
+  schedule draws, carrier wildcards, checksum and padding expansion, carrier
+  alphabet ordering, and whitening all consume RFC 8439 ChaCha20 keystream from
+  an embedded zero-dependency implementation (validated against the official RFC
+  8439 block-function test vector) with BLAKE3-derived 32-byte stream keys.
+  Legacy rc.4/rc.3/rc.2 decrypt paths keep frozen LCG copies.
+- **BLAKE3 seed derivation** - as of rc.8, domain separation and MAC subkey
+  derivation use an embedded zero-dependency BLAKE3 hash (validated against the
+  official BLAKE3 test vectors) instead of FNV-1a. Legacy rc.4/rc.3/rc.2 and
+  v2.0.0 decrypt paths keep frozen FNV-1a.
 - **1-18 rotors** - irregular key-derived stepping with a `66/162` mask.
-- **Steckerbrett** - up to 80 symmetric character-pair swaps.
+- **Steckerbrett** - up to 81 symmetric character-pair swaps.
 - **16 keyed layout permutations** - stable layout labels seed independent
   key-derived permutations of the full alphabet.
 - **Key-derived rounds** - `10-999` rounds via a named `ROUND_MINIMUM` floor.
@@ -100,7 +108,8 @@ New `rc.6-stream` ciphertext has one scheduled stream:
 ```text
 payload events:  [format_tag:1][len_field:4][plaintext][padding]
 checksum events: [checksum:10]
-carrier events:  [version:1][checksum:10] encoded as 44 zero-width symbols
+carrier events:  [version:1][checksum:10][optional filler] encoded as
+                 logical_len * 4 zero-width symbols
 ```
 
 Payload characters, checksum characters, and zero-width carriers are walked in
@@ -119,9 +128,28 @@ Zero-width carriers are chosen from:
 Removing a checksum character or carrier turns a valid `rc.6-stream` message
 into a verification failure.
 
-When materialized metadata is enabled, the 44 carrier events are emitted as
+When materialized metadata is enabled, the carrier events are emitted as
 visible `ALPHA` characters instead of zero-width markers and are encrypted as
 normal stream participants. Toggle mismatches fail closed.
+
+## Dual Ciphertext
+
+With an optional faux plaintext, ENIGMAK generates two independent `K6:` keys
+and one prefix-free ciphertext. The outer text is unpadded base64url of a
+16-byte nonce plus two equal-length wrapped slots. There is no public magic
+string; any recognizable prefix can appear only by coincidence. Decrypt tries
+the supplied key against both slots, then requires a complete inner
+`rc.6-stream` verification. The returned format label is `rc.9-dual-v1`.
+
+The wrapper is a framing layer, not authenticated encryption. Length and
+base64url statistics can still distinguish dual ciphertext from ordinary
+messages.
+
+```bash
+python python/enigmak.py encrypt-dual "INTENDED" --faux-plaintext "COVER"
+python python/enigmak.py decrypt CIPHERTEXT "KEY STRING"
+python scripts/verify.py
+```
 
 ## Key Format
 
@@ -157,6 +185,8 @@ The root browser build, docs mirror, and Electron HTML build now:
 - warn when hidden carrier counts look damaged or metadata appears stripped
 - expose a materialized metadata checkbox with a receiver-must-match hint
 - let plaintext and ciphertext boxes resize vertically
+- generate one shared dual ciphertext plus intended-recipient and faux keys
+  without silently regenerating those keys on every keystroke
 
 ## Desktop App
 
@@ -172,9 +202,9 @@ root `enigmak.html`.
 - Verify the key fingerprint verbally before use.
 - The checksum helps detect wrong-key and corruption cases, but it is not a
   replacement for researched authenticated encryption.
-- Failed decrypts deliberately corrupt an internal fixed 4096-character buffer
-  and then clear plaintext outputs. This is a local fail-closed hygiene measure,
-  not a substitute for authenticated encryption.
+- Failed decrypts perform a fixed 4096-character local work pass and then clear
+  plaintext outputs. This is fail-closed hygiene, not guaranteed memory
+  overwrite and not a substitute for authenticated encryption.
 - European extended characters in the alphabet encrypt directly. Other
   non-alphabet Unicode characters still pass through unchanged.
 
