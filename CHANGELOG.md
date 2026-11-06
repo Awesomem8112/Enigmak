@@ -33,7 +33,7 @@
   There is no public magic string in the ciphertext literal. CLI `encrypt-dual`
   and the browser/Electron "Generate dual ciphertext" workflow are the primary
   surfaces. `--faux-only` / `--faux-out` must not print the intended key.
-- **Deprecated Option A decoy bundles** - `encrypt_decoy_bundle` /
+- **Decoy bundles** - `encrypt_decoy_bundle` /
   `encryptDecoyBundle` and CLI `encrypt-decoy` remain available as two
   independent ciphertexts. They are not same-blob dual decryption.
 - **Correctness audit** - parser, Unicode, BigInt, modulo, primitive, fallback,
